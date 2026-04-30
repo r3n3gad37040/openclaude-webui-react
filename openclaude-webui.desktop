@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=OpenClaude Web UI
+Comment=Multi-provider AI chat interface
+Exec=bash -c "cd $HOME/openclaude-webui && bash start.sh"
+Icon=$HOME/openclaude-webui/src/ui/assets/icon.png
+Terminal=true
+Type=Application
+Categories=Development;Network;Chat;
+StartupNotify=true
+X-GNOME-Autostart-enabled=false

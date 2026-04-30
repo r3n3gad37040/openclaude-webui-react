@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build cache
+tsconfig.tsbuildinfo
+
+# Runtime artifacts
+logs/
+uploads/
+
+# State (lives in ~/.openclaude-webui/state/, never in repo, but defensive)
+state/
+*.local
+
+# Provider keys / secrets — never commit
+provider_keys.json
+auth.json
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
