@@ -2,6 +2,10 @@
 
 Multi-provider AI chat interface for the [openclaude](https://www.npmjs.com/package/@gitlawb/openclaude) CLI. React/Vite frontend, Hono backend, runs locally.
 
+![Chat interface — Grok 4.3 multi-turn](docs/screenshots/chat-interface.png)
+
+![Inline video generation — xAI grok-imagine-video](docs/screenshots/video-generation.png)
+
 ## Features
 
 - **Native Anthropic mode** — Claude models route through openclaude's built-in Anthropic client (Claude Code OAuth or `ANTHROPIC_API_KEY`)
