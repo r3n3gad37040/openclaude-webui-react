@@ -29,7 +29,7 @@ export type RunnerEvent =
   | { type: 'usage'; data: { input_tokens: number; output_tokens: number } }
   | { type: 'tool_start'; name: string; tool_id: string }
   | { type: 'tool_done'; name: string; tool_id: string; input: string }
-  | { type: 'media'; url: string; media_type: 'image' | 'video'; alt?: string; width?: number; height?: number }
+  | { type: 'media'; url: string; media_type: 'image' | 'video' | 'audio'; alt?: string; width?: number; height?: number }
   | { type: 'done' }
 
 export interface Runner {

@@ -151,15 +151,70 @@ export function isToolProvider(provider: string): boolean {
 
 // ─── Models ───────────────────────────────────────────────────────────────
 
-export type ModelType = 'text' | 'image' | 'video' | 'audio'
+export type ModelType = 'text' | 'image' | 'video' | 'audio' | 'music'
+
+// Speech-to-text models (Whisper et al) need a file-upload UX, not text-in/audio-out.
+// Detected separately so discovery can drop them before they reach the picker.
+export function isAudioInputModel(modelId: string): boolean {
+  return /whisper|transcrib|[._-]stt[._-]|[._-]stt$|^stt[._-]|speech[._-]to[._-]text|prompt[._-]guard|safeguard/i.test(modelId)
+}
+
+// Music / song-generation models — long-form audio (60s+). Routed via async
+// queue+poll endpoints, not the sync /audio/speech path used for TTS. Checked
+// before the audio (TTS) regex in inferModelType so music wins.
+export function isMusicModel(modelId: string): boolean {
+  return /ace[._-]step|minimax[._-]music|stable[._-]audio|mmaudio|elevenlabs[._-]music|sound[._-]effects/i.test(modelId)
+}
 
 export function inferModelType(modelId: string): ModelType {
   const id = modelId.toLowerCase()
   // Video checked first so "grok-imagine-video" doesn't match image pattern
   if (/video|mochi|wan[._-]|kling|cogvideo|animate|minimax[._-]vid/i.test(id)) return 'video'
   if (/flux|imagen|\bimage\b|imagine|stable[._-]diff|sdxl|hidream|aura|dall[._-]e|playground[._-]v|wai[._-]nsfw/i.test(id)) return 'image'
-  if (/whisper|orpheus|[._-]tts[._-]|[._-]tts$|^tts[._-]|speech|[._-]audio[._-]/i.test(id)) return 'audio'
+  // Music takes precedence over audio (TTS) since some patterns overlap (e.g. elevenlabs)
+  if (isMusicModel(id)) return 'music'
+  if (/orpheus|kokoro|elevenlabs|chatterbox|inworld|[\/._-]tts[\/._-]|[\/._-]tts$|^tts[\/._-]|speech|[\/._-]audio[\/._-]/i.test(id)) return 'audio'
   return 'text'
+}
+
+// Per-music-model body shape. Different music-gen APIs accept different keys —
+// minimax v2 requires lyrics, v25/v26 require force_instrumental or lyrics, etc.
+// `extra` is merged into the queue body verbatim. `reusePromptAsLyrics` reuses
+// the user's prompt as `lyrics_prompt` for models that need it.
+export interface MusicModelConfig {
+  duration_seconds?: number     // pass `duration_seconds` (ace-step accepts it)
+  format: 'mp3' | 'wav' | 'flac' | 'ogg'
+  extra?: Record<string, unknown>
+  reusePromptAsLyrics?: boolean
+}
+
+// Defaults aim at "give me a real song" — for minimax v25/v26 we default to
+// instrumental so users don't have to write lyrics; v2 requires lyrics and has
+// no instrumental flag, so the prompt doubles as the lyrics_prompt.
+export const MUSIC_MODEL_DEFAULTS: Record<string, MusicModelConfig> = {
+  'ace-step-15':                  { duration_seconds: 210, format: 'flac' },
+  'minimax-music-v2':             { format: 'mp3', reusePromptAsLyrics: true },
+  'minimax-music-v25':            { format: 'mp3', extra: { force_instrumental: true } },
+  'minimax-music-v26':            { format: 'mp3', extra: { force_instrumental: true } },
+  'stable-audio-25':              { format: 'mp3' },
+  'mmaudio-v2-text-to-audio':     { format: 'mp3' },
+  'elevenlabs-music':             { format: 'mp3' },
+  'elevenlabs-sound-effects-v2':  { format: 'mp3' },
+}
+
+// Per-provider audio (TTS) defaults. Endpoint is the OpenAI-compat speech path
+// for providers that support it; voice is the safest default per provider.
+export interface AudioProviderConfig {
+  endpoint: string             // path appended to provider base_url (e.g. "/audio/speech")
+  voice: string                // default voice identifier
+  format: 'mp3' | 'wav' | 'opus' | 'aac' | 'flac' | 'pcm'
+  base_url_override?: string   // when not OpenAI-compat or path differs from base_url
+}
+
+export const AUDIO_PROVIDER_DEFAULTS: Record<string, AudioProviderConfig> = {
+  openai: { endpoint: '/audio/speech', voice: 'alloy', format: 'mp3' },
+  groq:   { endpoint: '/audio/speech', voice: 'tara',  format: 'wav' },
+  venice: { endpoint: '/audio/speech', voice: 'af_sky', format: 'mp3' },
 }
 
 export function getConfiguredModels(): Model[] {

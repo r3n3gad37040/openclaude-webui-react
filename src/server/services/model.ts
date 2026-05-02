@@ -13,6 +13,7 @@ import {
   getConfiguredModels,
   saveModels,
   isToolProvider,
+  isAudioInputModel,
 } from './config.js'
 import type { Model, ModelType } from '../../types/index.js'
 
@@ -78,16 +79,29 @@ async function fetchProviderModels(provider: string, apiKey: string): Promise<Mo
 
   if (provider === 'anthropic') return fetchAnthropicModels(apiKey)
 
-  // Venice exposes models per type via ?type=text|image|video|tts. The default returns text only —
-  // image, video, and tts (audio) need explicit calls.
+  // Venice exposes models per type via ?type=text|image|video|tts|music. The default returns
+  // text only — every non-text class needs its own call. tts and music both render as 'audio'
+  // in our type system; routing later distinguishes by isMusicModel().
   if (provider === 'venice') {
-    const [text, image, video, tts] = await Promise.all([
+    const [text, image, video, tts, music] = await Promise.all([
       fetchType(`${meta.base_url}/models?type=text`, apiKey, provider, 'text'),
       fetchType(`${meta.base_url}/models?type=image`, apiKey, provider, 'image'),
       fetchType(`${meta.base_url}/models?type=video`, apiKey, provider, 'video'),
       fetchType(`${meta.base_url}/models?type=tts`, apiKey, provider, 'audio'),
+      fetchType(`${meta.base_url}/models?type=music`, apiKey, provider, 'music'),
     ])
-    return [...text, ...image, ...video, ...tts]
+    // Dedup: tts + music endpoints can return overlapping models. Process music
+    // BEFORE tts so the tts classification wins for ids returned by both.
+    const byId = new Map<string, typeof text[number]>()
+    for (const m of [...text, ...image, ...video, ...music, ...tts]) byId.set(m.id, m)
+    // Force-reclassify any id that looks like TTS but only appeared under
+    // ?type=music (Venice puts elevenlabs-tts-v3 / -multilingual-v2 there).
+    for (const m of byId.values()) {
+      if (m.type === 'music' && /[\/._-]tts[\/._-]|[\/._-]tts$|^tts[\/._-]/i.test(m.id)) {
+        m.type = 'audio'
+      }
+    }
+    return [...byId.values()]
   }
 
   return fetchType(`${meta.base_url}/models`, apiKey, provider)
@@ -102,7 +116,10 @@ export async function discoverAndSaveModels(
   const key = apiKey ?? getProviderApiKey(provider)
   if (!key) return []
 
-  const models = await fetchProviderModels(provider, key)
+  const raw = await fetchProviderModels(provider, key)
+  // Drop STT / classifier models — they need a file-upload UX we don't have.
+  // Surfacing them in the chat-model picker just produces broken sessions.
+  const models = raw.filter((m) => !isAudioInputModel(m.id) && !isAudioInputModel(m.model))
   if (models.length > 0) {
     saveModels(models, provider)
   }

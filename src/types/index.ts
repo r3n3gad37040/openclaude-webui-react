@@ -6,7 +6,7 @@ export interface Provider {
   base_url: string
 }
 
-export type ModelType = 'text' | 'image' | 'video' | 'audio'
+export type ModelType = 'text' | 'image' | 'video' | 'audio' | 'music'
 
 export interface Model {
   id: string          // "venice/kimi-k2-5"
@@ -65,8 +65,8 @@ export interface Attachment {
 }
 
 export interface GeneratedMedia {
-  url: string          // resolved URL suitable for <img src> or <video src>
-  media_type: 'image' | 'video'
+  url: string          // resolved URL suitable for <img src>, <video src>, or <audio src>
+  media_type: 'image' | 'video' | 'audio'
   alt?: string         // alt text / description
   width?: number
   height?: number
@@ -109,7 +109,7 @@ export type SSEEvent =
   | { type: 'usage'; data: { input_tokens: number; output_tokens: number } }
   | { type: 'tool_start'; name: string; tool_id: string }
   | { type: 'tool_done'; name: string; tool_id: string; input: string }
-  | { type: 'media'; url: string; media_type: 'image' | 'video'; alt?: string; width?: number; height?: number }
+  | { type: 'media'; url: string; media_type: 'image' | 'video' | 'audio'; alt?: string; width?: number; height?: number }
   | { type: 'done' }
 
 // ─── API response shapes ──────────────────────────────────────────────────
