@@ -12,11 +12,12 @@ Multi-provider AI chat interface for the [openclaude](https://www.npmjs.com/pack
 - **OpenAI-compat providers** — Venice.ai, OpenRouter, xAI, Groq, Mistral, Gemini, Moonshot, OpenAI, Dolphin, Nineteen, plus tool providers (Apify, Firecrawl)
 - **Image generation** — xAI (`grok-imagine-image`), Venice (28 image models incl. flux/seedream/hidream), OpenRouter (Gemini-image, GPT-image)
 - **Video generation** — xAI (`grok-imagine-video`), Venice (90+ video models incl. seedance/wan/kling/veo/sora-2)
-- **Inline media rendering** — `<img>` and `<video controls>` rendered directly in chat bubbles
-- **Type filter** — sidebar filter for Text / Image / Video / Audio models
-- **Per-provider model discovery** — auto-fetches text + image + video + tts model lists per provider
-
-> **Note:** Audio-generating models (TTS / speech) are surfaced by discovery and selectable in the picker, but the generation path is not wired up yet — selecting one will not produce audio output. Text, image, and video generation are fully functional.
+- **Audio generation (TTS)** — Venice (10 voices: kokoro, orpheus, chatterbox, elevenlabs, minimax-speech, etc.), Groq (Orpheus), OpenAI (tts-1 / tts-1-hd) — sync `/audio/speech` path returning short speech inline
+- **Music generation** — Venice (ace-step, minimax-music v2/v25/v26, stable-audio, mmaudio, elevenlabs sound effects) — async queue+poll path producing songs up to 3:30 inline with `<audio controls>`
+- **Inline media rendering** — `<img>`, `<video controls>`, and `<audio controls>` rendered directly in chat bubbles
+- **Live progress timer** — long-running music generations show an animated `🎵 Generating song M:SS` indicator that ticks every second so you can see it's working
+- **Type filter** — sidebar filter for Text / Image / Video / Audio / Music models
+- **Per-provider model discovery** — auto-fetches text + image + video + tts + music model lists per provider
 
 ## Setup
 
