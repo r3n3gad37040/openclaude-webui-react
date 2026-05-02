@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { getAllProviders, getAllProviderKeys, getProviderApiKey, loadPreferences, savePreferences } from '../services/config.js'
+import { getAllProviders, getAllProviderKeys, loadPreferences, savePreferences } from '../services/config.js'
 import { getModelInfo } from '../services/model.js'
 import { listSessions, getSession } from '../services/session.js'
 import { getActiveRunners, cancelRunner } from '../services/runner.js'
@@ -31,8 +31,13 @@ router.get('/status', (c) => {
   const sessions = listSessions()
   const activeRunners = getActiveRunners()
 
+  // Strict check: only count keys the user explicitly saved via the UI
+  // (provider_keys.json). The env-var fallback is for openclaude routing —
+  // e.g. OPENAI_API_KEY in ~/.env aliases a Venice key, GEMINI/MISTRAL keys
+  // may be inherited from shell startup files for unrelated tools. Treating
+  // those as "configured" misleads the status bar.
   const keyHealth = Object.fromEntries(
-    providers.map((p) => [p.id, { id: p.id, name: p.name, key_status: (keys[p.id] || getProviderApiKey(p.id)) ? 'green' : 'red' }])
+    providers.map((p) => [p.id, { id: p.id, name: p.name, key_status: keys[p.id] ? 'green' : 'red' }])
   )
 
   let totalInput = 0
