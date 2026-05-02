@@ -10,7 +10,6 @@ import modelRoutes from './routes/models.js'
 import statusRoutes from './routes/status.js'
 import uploadRoutes from './routes/upload.js'
 import mediaRoutes from './routes/media.js'
-import anthropicProxy from './routes/anthropicProxy.js'
 import openrouterProxy from './routes/openrouterProxy.js'
 import veniceProxy from './routes/veniceProxy.js'
 import xaiProxy from './routes/xaiProxy.js'
@@ -38,7 +37,6 @@ app.use(
 )
 
 // ─── Provider proxies (no auth — openclaude calls these directly) ────────
-app.route('/anthropic-proxy', anthropicProxy)
 app.route('/or-proxy', openrouterProxy)
 app.route('/venice-proxy', veniceProxy)
 app.route('/xai-proxy', xaiProxy)

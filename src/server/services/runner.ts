@@ -29,7 +29,7 @@ export type RunnerEvent =
   | { type: 'usage'; data: { input_tokens: number; output_tokens: number } }
   | { type: 'tool_start'; name: string; tool_id: string }
   | { type: 'tool_done'; name: string; tool_id: string; input: string }
-  | { type: 'media'; url: string; media_type: 'image' | 'video'; alt?: string; width?: number; height?: number }
+  | { type: 'media'; url: string; media_type: 'image' | 'video' | 'audio'; alt?: string; width?: number; height?: number }
   | { type: 'done' }
 
 export interface Runner {
@@ -61,7 +61,21 @@ function buildEnv(modelId: string): NodeJS.ProcessEnv {
   const providerMeta = provider ? PROVIDER_MAP[provider] : null
   const baseUrl = PROXY_MAP[provider] ?? providerMeta?.base_url ?? ''
 
-  if (apiKey && baseUrl && model) {
+  if (apiKey && provider === 'anthropic' && model) {
+    // Native Anthropic mode — openclaude IS an Anthropic agent. Do NOT set
+    // OPENAI_BASE_URL; let the CLI use its built-in Anthropic client.
+    env['ANTHROPIC_API_KEY'] = apiKey
+    env['ANTHROPIC_MODEL'] = model
+    delete env['CLAUDE_CODE_USE_OPENAI']
+    delete env['OPENAI_API_KEY']
+    delete env['OPENAI_BASE_URL']
+    delete env['OPENAI_MODEL']
+    delete env['VENICE_MODEL_NAME']
+    delete env['VENICE_UNCENSORED']
+    delete env['VENICE_DISABLE_THINKING']
+    if (caps && caps.tools === false) env['OC_DISABLE_TOOLS'] = '1'
+    else delete env['OC_DISABLE_TOOLS']
+  } else if (apiKey && baseUrl && model) {
     env['CLAUDE_CODE_USE_OPENAI'] = '1'
     env['OPENAI_API_KEY'] = apiKey
     env['OPENAI_BASE_URL'] = baseUrl
@@ -106,12 +120,17 @@ function buildEnv(modelId: string): NodeJS.ProcessEnv {
   return env
 }
 
-async function* readEvents(proc: ChildProcess, aborted: { value: boolean }): AsyncGenerator<RunnerEvent> {
+async function* readEvents(
+  proc: ChildProcess,
+  aborted: { value: boolean },
+  stderrTail: () => string
+): AsyncGenerator<RunnerEvent> {
   let buffer = ''
   let emitted = ''
   let anyEmitted = false  // survives message_stop resets — guards assistant fallback
   let totalInputTokens = 0
   let totalOutputTokens = 0
+  let resultSeen = false
   // Tracks in-progress tool_use content blocks by their stream index
   const toolBlocks = new Map<number, { name: string; id: string; inputBuffer: string }>()
 
@@ -275,6 +294,7 @@ async function* readEvents(proc: ChildProcess, aborted: { value: boolean }): Asy
       }
 
       if (eventType === 'result') {
+        resultSeen = true
         if (totalInputTokens > 0 || totalOutputTokens > 0) {
           yield { type: 'usage', data: { input_tokens: totalInputTokens, output_tokens: totalOutputTokens } }
         }
@@ -287,6 +307,21 @@ async function* readEvents(proc: ChildProcess, aborted: { value: boolean }): Asy
         yield { type: 'done' }
         return
       }
+    }
+  }
+
+  // stdout closed without a result event — openclaude exited (or crashed) early.
+  // If nothing was streamed, surface the failure with stderr context so the UI
+  // doesn't render a phantom empty turn.
+  if (!resultSeen && !aborted.value) {
+    const exitCode = proc.exitCode
+    const tail = stderrTail()
+    if (!anyEmitted) {
+      const summary = tail.trim() || `openclaude exited (code ${exitCode ?? 'unknown'}) with no output`
+      yield { type: 'error', content: summary.slice(-2000) }
+    } else if (tail.trim()) {
+      // Partial output then crash — log the tail for diagnostics
+      process.stderr.write(`[runner] openclaude exited mid-stream (code ${exitCode}); stderr tail:\n${tail.slice(-2000)}\n`)
     }
   }
 
@@ -340,8 +375,20 @@ export function startRunner(
     encoding: 'utf8',
   })
 
-  // Drain stderr so the 64KB pipe buffer never blocks openclaude
-  proc.stderr?.resume()
+  // Capture stderr (capped) so silent crashes surface in the API log AND in
+  // the SSE error event readEvents emits when openclaude exits without
+  // producing a `result` event. Without this, xAI/upstream failures look like
+  // empty assistant turns to the user.
+  const STDERR_CAP = 16_384
+  let stderrBuf = ''
+  proc.stderr?.setEncoding('utf8')
+  proc.stderr?.on('data', (chunk: string) => {
+    stderrBuf += chunk
+    if (stderrBuf.length > STDERR_CAP) {
+      stderrBuf = stderrBuf.slice(-STDERR_CAP)
+    }
+    process.stderr.write(`[openclaude:${sessionId.slice(0, 8)}] ${chunk}`)
+  })
 
   const aborted = { value: false }
 
@@ -367,7 +414,7 @@ export function startRunner(
     sessionId,
     proc,
     cancel,
-    events: readEvents(proc, aborted),
+    events: readEvents(proc, aborted, () => stderrBuf),
   }
 
   activeRunners.set(sessionId, runner)

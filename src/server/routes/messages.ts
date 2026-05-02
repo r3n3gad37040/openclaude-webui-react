@@ -2,7 +2,8 @@ import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { getSession, addMessage, deleteLastAssistantMessage } from '../services/session.js'
 import { startRunner, cancelRunner } from '../services/runner.js'
-import { getModelCost, getModelEntry, inferModelType, getProviderApiKey, PROXY_MAP } from '../services/config.js'
+import { getModelCost, getModelEntry, inferModelType, getProviderApiKey, PROXY_MAP, PROVIDER_MAP, AUDIO_PROVIDER_DEFAULTS, isMusicModel, MUSIC_MODEL_DEFAULTS } from '../services/config.js'
+import { saveBytesMedia } from '../services/media.js'
 import type { ToolCall } from '../../types/index.js'
 
 const CLAUDE_MEM_URL = 'http://127.0.0.1:37777'
@@ -105,6 +106,176 @@ function buildConversationPrompt(
 // openclaude doesn't emit stdout events for non-text model responses, so we
 // call the proxy directly instead of spawning the CLI.
 
+// Music-gen flow (Venice /audio/queue + /audio/retrieve, async). Submits a
+// queue job, polls retrieve until binary audio comes back. Used for any model
+// where isMusicModel() is true — these produce 30s-3min songs that can't go
+// through the sync /audio/speech path.
+async function generateMusicInline(
+  stream: { writeSSE: (m: { data: string }) => Promise<void> },
+  sessionId: string,
+  provider: string,
+  model: string,
+  prompt: string,
+  userContent: string,
+): Promise<void> {
+  const apiKey = getProviderApiKey(provider)
+  const baseUrl = PROVIDER_MAP[provider]?.base_url
+  if (!apiKey || !baseUrl) {
+    const msg = `No API key or base URL configured for ${provider}`
+    await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: msg }) })
+    await addMessage(sessionId, 'assistant', msg)
+    return
+  }
+  if (provider !== 'venice') {
+    const msg = `Music generation only wired for Venice currently; ${provider} not supported.`
+    await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: msg }) })
+    await addMessage(sessionId, 'assistant', msg)
+    return
+  }
+
+  const cfg = MUSIC_MODEL_DEFAULTS[model] ?? { format: 'mp3' as const }
+  // Venice's /audio/queue requires prompt length >= 10 and rejects unknown keys.
+  // Build the body conditionally per-model so we only send fields each variant
+  // actually accepts.
+  const queueBody: Record<string, unknown> = { model, prompt: prompt.slice(0, 500) }
+  if (cfg.duration_seconds !== undefined) queueBody['duration_seconds'] = cfg.duration_seconds
+  if (cfg.reusePromptAsLyrics) queueBody['lyrics_prompt'] = prompt.slice(0, 4000)
+  if (cfg.extra) Object.assign(queueBody, cfg.extra)
+
+  const queueRes = await fetch(`${baseUrl}/audio/queue`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(queueBody),
+  })
+  if (!queueRes.ok) {
+    const errBody = await queueRes.text().catch(() => '')
+    const msg = `Music queue failed (${queueRes.status}): ${errBody.slice(0, 300)}`
+    process.stderr.write(`[mediaSSE:music] ${msg}\n`)
+    await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: msg }) })
+    await addMessage(sessionId, 'assistant', msg)
+    return
+  }
+  const queueData = await queueRes.json() as { queue_id?: string }
+  const queueId = queueData.queue_id
+  if (!queueId) {
+    const msg = 'Music queue returned no queue_id'
+    await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: msg }) })
+    await addMessage(sessionId, 'assistant', msg)
+    return
+  }
+
+  // Poll /audio/retrieve. While processing, returns JSON {status:"PROCESSING"|"QUEUED"}.
+  // When ready, returns binary audio with audio/* content-type.
+  // ace-step at 210s typically completes in ~30-90s; cap at 10 min for safety.
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 10_000))
+    const poll = await fetch(`${baseUrl}/audio/retrieve`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queue_id: queueId, model }),
+    })
+    if (!poll.ok) continue
+    const ct = poll.headers.get('content-type') ?? ''
+    if (ct.startsWith('audio/')) {
+      const buf = new Uint8Array(await poll.arrayBuffer())
+      const ext: 'flac' | 'mp3' | 'wav' | 'ogg' =
+        ct.includes('flac') ? 'flac' :
+        ct.includes('wav') ? 'wav' :
+        ct.includes('ogg') ? 'ogg' :
+        cfg.format === 'flac' ? 'flac' : 'mp3'
+      const { url } = saveBytesMedia(buf, ext)
+      const alt = `Generated song (${model})`
+      await stream.writeSSE({ data: JSON.stringify({ type: 'media', url, media_type: 'audio', alt }) })
+      await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: '​' }) })
+      await addMessage(sessionId, 'assistant', '​', {
+        generated_media: [{ url, media_type: 'audio', alt }],
+      })
+      void saveMemSummary(sessionId, userContent, `Generated song: ${url}`)
+      return
+    }
+    // Status JSON — check for terminal failure
+    try {
+      const txt = await poll.text()
+      const j = JSON.parse(txt) as { status?: string; error?: string }
+      if (j.status === 'FAILED' || j.status === 'ERROR') {
+        const msg = `Music generation failed: ${j.error ?? j.status}`
+        await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: msg }) })
+        await addMessage(sessionId, 'assistant', msg)
+        return
+      }
+    } catch { /* keep polling */ }
+  }
+  const msg = 'Music generation timed out after 10 minutes'
+  await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: msg }) })
+  await addMessage(sessionId, 'assistant', msg)
+}
+
+// Calls upstream /v1/audio/speech directly (no proxy hop — TTS is a one-shot
+// POST returning binary, no identity stripping or chat-completions wrapping
+// needed). Saves bytes via saveBytesMedia, emits media_type:"audio" so the UI
+// can render <audio controls>.
+async function generateAudioInline(
+  stream: { writeSSE: (m: { data: string }) => Promise<void> },
+  sessionId: string,
+  provider: string,
+  model: string,
+  prompt: string,
+  userContent: string,
+): Promise<void> {
+  // Music models go through the async queue/retrieve flow — completely
+  // different API shape from sync TTS. Route early.
+  if (isMusicModel(model)) {
+    await generateMusicInline(stream, sessionId, provider, model, prompt, userContent)
+    return
+  }
+
+  const apiKey = getProviderApiKey(provider)
+  const baseUrl = PROVIDER_MAP[provider]?.base_url
+  const cfg = AUDIO_PROVIDER_DEFAULTS[provider]
+
+  if (!apiKey || !baseUrl) {
+    const msg = `No API key or base URL configured for ${provider}`
+    await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: msg }) })
+    await addMessage(sessionId, 'assistant', msg)
+    return
+  }
+  if (!cfg) {
+    const msg = `Audio generation not yet wired for provider "${provider}". Add a row to AUDIO_PROVIDER_DEFAULTS.`
+    await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: msg }) })
+    await addMessage(sessionId, 'assistant', msg)
+    return
+  }
+
+  // OpenAI TTS hard-caps input at 4096 chars; truncate defensively for all providers.
+  const input = prompt.slice(0, 4000)
+
+  const res = await fetch(`${cfg.base_url_override ?? baseUrl}${cfg.endpoint}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, input, voice: cfg.voice, response_format: cfg.format }),
+  })
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '')
+    const msg = `Audio generation failed (${res.status}): ${errBody.slice(0, 300)}`
+    process.stderr.write(`[mediaSSE:audio] ${msg}\n`)
+    await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: msg }) })
+    await addMessage(sessionId, 'assistant', msg)
+    return
+  }
+
+  const buf = new Uint8Array(await res.arrayBuffer())
+  const { url } = saveBytesMedia(buf, cfg.format)
+  const alt = `Generated audio (${model})`
+
+  await stream.writeSSE({ data: JSON.stringify({ type: 'media', url, media_type: 'audio', alt }) })
+  await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: '​' }) })
+  await addMessage(sessionId, 'assistant', '​', {
+    generated_media: [{ url, media_type: 'audio', alt }],
+  })
+  void saveMemSummary(sessionId, userContent, `Generated audio: ${url}`)
+}
+
 function mediaSSE(c: Context, sessionId: string, modelId: string, prompt: string, userContent: string) {
   return streamSSE(c, async (stream) => {
     const slashIdx = modelId.indexOf('/')
@@ -112,8 +283,12 @@ function mediaSSE(c: Context, sessionId: string, modelId: string, prompt: string
     const model = slashIdx !== -1 ? modelId.slice(slashIdx + 1) : modelId
     const apiKey = provider ? getProviderApiKey(provider) : null
     const proxyBase = PROXY_MAP[provider] ?? ''
+    const modelType = inferModelType(modelId)
 
-    if (!apiKey || !proxyBase) {
+    // Audio (TTS) and music both bypass proxyBase — they call upstream provider
+    // endpoints directly. generate{Audio,Music}Inline validate apiKey/base_url
+    // themselves. The proxyBase guard only applies to image/video.
+    if (modelType !== 'audio' && modelType !== 'music' && (!apiKey || !proxyBase)) {
       await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: 'No API key or proxy configured for ' + provider }) })
       await stream.writeSSE({ data: JSON.stringify({ type: 'done' }) })
       return
@@ -123,14 +298,30 @@ function mediaSSE(c: Context, sessionId: string, modelId: string, prompt: string
     stream.onAbort(() => clearInterval(keepalive))
 
     // Live tool indicator so the UI shows an animated "running" badge while
-    // the proxy generates (image: ~10s, video: 30s-3min). Without this the
-    // chat just shows the generic "Thinking" dots.
-    const modelType = inferModelType(modelId)
-    const toolName = modelType === 'video' ? '🎬 Generating video' : '🎨 Generating image'
+    // the proxy generates (image: ~10s, video: 30s-3min, audio: 2-15s).
+    const toolName = modelType === 'video' ? '🎬 Generating video'
+      : modelType === 'music' ? '🎵 Generating song'
+      : modelType === 'audio' ? '🎙️ Generating audio'
+      : '🎨 Generating image'
     const toolId = `media-gen-${Date.now()}`
     await stream.writeSSE({ data: JSON.stringify({ type: 'tool_start', name: toolName, tool_id: toolId }) })
+    // Force the assistant message bubble to render immediately. The bundle's
+    // tool indicator only shows once the bubble exists, and the bubble only
+    // exists after the first chunk arrives. For long-running music gens (15-90s)
+    // the user otherwise sees nothing until completion. Zero-width space is
+    // invisible visually but counts as content.
+    await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: '​' }) })
 
     try {
+      if (modelType === 'music') {
+        await generateMusicInline(stream, sessionId, provider, model, prompt, userContent)
+        return
+      }
+      if (modelType === 'audio') {
+        await generateAudioInline(stream, sessionId, provider, model, prompt, userContent)
+        return
+      }
+
       const res = await fetch(`${proxyBase}/v1/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -344,7 +535,7 @@ router.post('/:id/messages', async (c) => {
 
   // Media models (image/video) bypass openclaude — the CLI never emits stdout events for them.
   const modelType = inferModelType(session.model_id)
-  if (modelType === 'image' || modelType === 'video') {
+  if (modelType === 'image' || modelType === 'video' || modelType === 'audio' || modelType === 'music') {
     return mediaSSE(c, sessionId, session.model_id, content, content)
   }
 
