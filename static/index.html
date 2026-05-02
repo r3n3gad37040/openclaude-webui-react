@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClaude Web UI</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Main App -->
+  <div id="app">
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <button id="menu-toggle" class="icon-btn" title="Toggle sidebar">☰</button>
+        <img class="brand-icon" src="/static/brand-icon.svg" alt="OpenClaude" width="56" height="56">
+        <h1>OpenClaude</h1>
+      </div>
+      <div class="top-bar-right">
+        <span id="status-indicator" class="status-badge">● Ready</span>
+        <button class="icon-btn" id="command-palette-btn" title="Command Palette (Ctrl+K)">⌘</button>
+        <button class="icon-btn" id="theme-btn" title="Theme">🎨</button>
+        <button class="icon-btn" id="shortcuts-btn" title="Keyboard Shortcuts (?)">?</button>
+        <button class="icon-btn" id="settings-btn" title="Settings">⚙</button>
+      </div>
+    </header>
+
+    <div class="main-area">
+      <!-- Sidebar -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <button class="new-chat-btn" id="new-chat-btn">
+            <span class="icon">+</span> New Chat
+          </button>
+          <div class="sidebar-search">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="sidebar-search-input" placeholder="Search chats..." class="sidebar-search-input">
+          </div>
+        </div>
+        <div class="sidebar-list" id="session-list">
+          <div class="sidebar-empty">No chats yet</div>
+        </div>
+        <div class="sidebar-footer">
+          <button class="sidebar-footer-btn" id="export-all-btn" title="Export all chats">📥 Export All</button>
+        </div>
+      </aside>
+
+      <!-- Chat Area -->
+      <main class="chat-area" id="chat-area">
+        <div class="chat-messages" id="chat-messages">
+          <div class="welcome-screen">
+            <svg class="welcome-logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M32 4L56 18V46L32 60L8 46V18L32 4Z" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M32 4V60" stroke="currentColor" stroke-width="2"/>
+              <path d="M8 18L56 46" stroke="currentColor" stroke-width="2"/>
+              <path d="M56 18L8 46" stroke="currentColor" stroke-width="2"/>
+              <circle cx="32" cy="32" r="7" fill="var(--accent)"/>
+            </svg>
+            <h2>Start a new chat</h2>
+            <p>Select a provider and model, then send a message.</p>
+            <div class="welcome-shortcuts">
+              <div class="shortcut-tip"><kbd>Ctrl+K</kbd> Command Palette</div>
+              <div class="shortcut-tip"><kbd>Ctrl+N</kbd> New Chat</div>
+              <div class="shortcut-tip"><kbd>?</kbd> All Shortcuts</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Drop zone overlay -->
+        <div class="drop-zone" id="drop-zone">
+          <div class="drop-zone-content">
+            <span class="drop-zone-icon">📎</span>
+            <p>Drop files here to attach</p>
+          </div>
+        </div>
+
+        <!-- Input area -->
+        <div class="input-bar">
+          <div class="input-controls">
+            <select id="provider-select" title="Provider">
+              <option value="" disabled selected>Provider</option>
+              <option value="venice">Venice.ai</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="xai">xAI</option>
+              <option value="groq">Groq</option>
+            </select>
+            <select id="model-select" title="Model">
+              <option value="" disabled>Select provider first</option>
+            </select>
+            <button id="refresh-models-btn" class="icon-btn-sm" title="Refresh models">↻</button>
+            <button id="restart-backend-btn" class="icon-btn-sm" title="Restart backend">⟳</button>
+          </div>
+          <div class="input-wrapper" id="input-wrapper">
+            <button id="attach-btn" class="attach-btn" title="Attach files (Ctrl+Shift+U)">📎</button>
+            <input type="file" id="file-input" style="display:none" multiple />
+            <textarea id="message-input" rows="2" placeholder="Message OpenClaude..." class="message-input"></textarea>
+            <button id="send-btn" title="Send (Enter)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22,2 15,22 11,13 2,9 22,2"></polygon>
+              </svg>
+            </button>
+            <button id="cancel-btn" title="Stop generation (Escape)" style="display:none">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+            </button>
+          </div>
+          <div class="attachment-preview" id="attachment-preview"></div>
+        </div>
+
+        <!-- Status bar -->
+        <div class="status-bar" id="status-bar">
+          <div class="status-bar-left">
+            <span class="status-bar-item" id="status-bar-model">Model: —</span>
+            <span class="status-bar-item" id="status-bar-provider">Provider: —</span>
+            <span class="status-bar-separator">|</span>
+            <span class="status-bar-item" id="status-bar-key-health">Key: ⬤</span>
+          </div>
+          <div class="status-bar-right">
+            <span class="status-bar-item" id="status-bar-sessions">Sessions: 0</span>
+            <span class="status-bar-separator">|</span>
+            <span class="status-bar-item" id="status-bar-runner">⬤ Idle</span>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Command Palette -->
+  <div id="command-palette" class="overlay" style="display:none;">
+    <div class="command-palette-content">
+      <div class="command-palette-input-wrapper">
+        <span class="palette-search-icon">⌕</span>
+        <input type="text" id="palette-input" placeholder="Search commands, chats, models..." autocomplete="off">
+        <kbd class="palette-esc-hint">ESC</kbd>
+      </div>
+      <div class="palette-divider"></div>
+      <div class="palette-results" id="palette-results">
+        <!-- Populated dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme Picker -->
+  <div id="theme-picker" class="overlay" style="display:none;">
+    <div class="theme-picker-content">
+      <h3>Choose Theme</h3>
+      <div class="theme-list" id="theme-list">
+        <button class="theme-option" data-theme="dark" data-name="Dark (Default)">
+          <span class="theme-swatch" style="background: var(--bg-primary); border: 2px solid var(--accent);"></span>
+          <span class="theme-label">Dark</span>
+        </button>
+        <button class="theme-option" data-theme="dark-amoled" data-name="AMOLED Pure Black">
+          <span class="theme-swatch" style="background: #000000; border: 2px solid var(--border);"></span>
+          <span class="theme-label">AMOLED</span>
+        </button>
+        <button class="theme-option" data-theme="gruvbox" data-name="Gruvbox">
+          <span class="theme-swatch" style="background: #282828; border: 2px solid #fabd2f;"></span>
+          <span class="theme-label">Gruvbox</span>
+        </button>
+        <button class="theme-option" data-theme="nord" data-name="Nord">
+          <span class="theme-swatch" style="background: #2E3440; border: 2px solid #88C0D0;"></span>
+          <span class="theme-label">Nord</span>
+        </button>
+        <button class="theme-option" data-theme="solarized" data-name="Solarized">
+          <span class="theme-swatch" style="background: #002B36; border: 2px solid #B58900;"></span>
+          <span class="theme-label">Solarized</span>
+        </button>
+      </div>
+      <div class="accent-picker">
+        <p>Accent Color</p>
+        <div class="accent-swatches" id="accent-swatches">
+          <button class="accent-swatch" data-color="#f59e0b" style="background: #f59e0b;" title="Amber"></button>
+          <button class="accent-swatch" data-color="#3b82f6" style="background: #3b82f6;" title="Blue"></button>
+          <button class="accent-swatch" data-color="#10b981" style="background: #10b981;" title="Emerald"></button>
+          <button class="accent-swatch" data-color="#8b5cf6" style="background: #8b5cf6;" title="Purple"></button>
+          <button class="accent-swatch" data-color="#ef4444" style="background: #ef4444;" title="Red"></button>
+          <button class="accent-swatch" data-color="#f472b6" style="background: #f472b6;" title="Pink"></button>
+          <button class="accent-swatch" data-color="#06b6d4" style="background: #06b6d4;" title="Cyan"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard Shortcuts Overlay -->
+  <div id="shortcuts-overlay" class="overlay" style="display:none;">
+    <div class="shortcuts-content">
+      <div class="shortcuts-header">
+        <h3>Keyboard Shortcuts</h3>
+        <button class="modal-close" id="shortcuts-close">×</button>
+      </div>
+      <div class="shortcuts-grid">
+        <div class="shortcut-group">
+          <h4>General</h4>
+          <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>K</kbd><span>Command Palette</span></div>
+          <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>N</kbd><span>New Chat</span></div>
+          <div class="shortcut-item"><kbd>?</kbd><span>This dialog</span></div>
+          <div class="shortcut-item"><kbd>Escape</kbd><span>Close dialogs / Cancel</span></div>
+        </div>
+        <div class="shortcut-group">
+          <h4>Chat</h4>
+          <div class="shortcut-item"><kbd>Enter</kbd><span>Send message</span></div>
+          <div class="shortcut-item"><kbd>Shift</kbd>+<kbd>Enter</kbd><span>New line</span></div>
+          <div class="shortcut-item"><kbd>↑</kbd><span>Edit last message</span></div>
+          <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>E</kbd><span>Export chat</span></div>
+        </div>
+        <div class="shortcut-group">
+          <h4>Navigation</h4>
+          <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>S</kbd><span>Search chats</span></div>
+          <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>P</kbd><span>Switch provider</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="overlay" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>⚙ Settings</h3>
+        <button class="modal-close" id="settings-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-section">
+          <h4>Provider API Keys</h4>
+          <p class="settings-section-desc">Keys are stored locally and masked in responses.</p>
+          <div class="settings-key-grid">
+            <div class="key-row">
+              <label>Venice.ai</label>
+              <div class="key-input-group">
+                <input type="password" id="key-venice" placeholder="sk-...">
+                <button class="key-toggle-btn" data-target="key-venice">👁</button>
+              </div>
+              <span class="key-status" id="status-venice"></span>
+            </div>
+            <div class="key-row">
+              <label>OpenRouter</label>
+              <div class="key-input-group">
+                <input type="password" id="key-openrouter" placeholder="sk-or-...">
+                <button class="key-toggle-btn" data-target="key-openrouter">👁</button>
+              </div>
+              <span class="key-status" id="status-openrouter"></span>
+            </div>
+            <div class="key-row">
+              <label>xAI</label>
+              <div class="key-input-group">
+                <input type="password" id="key-xai" placeholder="xai-...">
+                <button class="key-toggle-btn" data-target="key-xai">👁</button>
+              </div>
+              <span class="key-status" id="status-xai"></span>
+            </div>
+            <div class="key-row">
+              <label>Groq</label>
+              <div class="key-input-group">
+                <input type="password" id="key-groq" placeholder="gsk_...">
+                <button class="key-toggle-btn" data-target="key-groq">👁</button>
+              </div>
+              <span class="key-status" id="status-groq"></span>
+            </div>
+          </div>
+          <button class="btn-primary" id="save-keys-btn">Save All Keys</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
