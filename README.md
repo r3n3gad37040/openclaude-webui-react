@@ -16,6 +16,8 @@ Multi-provider AI chat interface for the [openclaude](https://www.npmjs.com/pack
 - **Type filter** — sidebar filter for Text / Image / Video / Audio models
 - **Per-provider model discovery** — auto-fetches text + image + video + tts model lists per provider
 
+> **Note:** Audio-generating models (TTS / speech) are surfaced by discovery and selectable in the picker, but the generation path is not wired up yet — selecting one will not produce audio output. Text, image, and video generation are fully functional.
+
 ## Setup
 
 ```bash
