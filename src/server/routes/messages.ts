@@ -6,13 +6,17 @@ import { getModelCost, getModelEntry, inferModelType, getProviderApiKey, PROXY_M
 import { saveBytesMedia } from '../services/media.js'
 import type { ToolCall } from '../../types/index.js'
 
-const CLAUDE_MEM_URL = 'http://127.0.0.1:37777'
-// Both projects injected: openclaude-webui for project-specific work, johnny for general user context
-const CLAUDE_MEM_PROJECTS = 'openclaude-webui,johnny'
+// Configurable so the integration can be retargeted (different host, port, or
+// disabled outright by setting CLAUDE_MEM_URL=disabled). Default keeps the
+// existing local-port wiring.
+const CLAUDE_MEM_URL = process.env['CLAUDE_MEM_URL'] ?? 'http://127.0.0.1:37777'
+const CLAUDE_MEM_PROJECTS = process.env['CLAUDE_MEM_PROJECTS'] ?? 'openclaude-webui,johnny'
+const CLAUDE_MEM_DISABLED = CLAUDE_MEM_URL === 'disabled'
 
 // Returns the compact observation-index format that the terminal SessionStart hook injects.
 // Plain text — NOT JSON. Do not JSON.parse() this.
 async function fetchMemoryContext(): Promise<string> {
+  if (CLAUDE_MEM_DISABLED) return ''
   try {
     const res = await fetch(
       `${CLAUDE_MEM_URL}/api/context/inject?projects=${CLAUDE_MEM_PROJECTS}`,
@@ -20,7 +24,8 @@ async function fetchMemoryContext(): Promise<string> {
     )
     if (!res.ok) return ''
     return await res.text()
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[messages] fetchMemoryContext failed (non-fatal): ${err}\n`)
     return ''
   }
 }
@@ -28,6 +33,7 @@ async function fetchMemoryContext(): Promise<string> {
 // Register the webui session in claude-mem so summaries are tracked per-session.
 // Fire-and-forget — failure is non-fatal.
 async function initMemSession(contentSessionId: string, firstPrompt: string): Promise<void> {
+  if (CLAUDE_MEM_DISABLED) return
   try {
     await fetch(`${CLAUDE_MEM_URL}/api/sessions/init`, {
       method: 'POST',
@@ -40,12 +46,15 @@ async function initMemSession(contentSessionId: string, firstPrompt: string): Pr
       }),
       signal: AbortSignal.timeout(3000),
     })
-  } catch { /* non-critical */ }
+  } catch (err) {
+    process.stderr.write(`[messages] initMemSession failed (non-fatal): ${err}\n`)
+  }
 }
 
 // Save an exchange summary back to claude-mem so future sessions can recall what was done.
 // This is what makes webui work visible to the terminal and vice versa.
 async function saveMemSummary(contentSessionId: string, request: string, completed: string): Promise<void> {
+  if (CLAUDE_MEM_DISABLED) return
   try {
     await fetch(`${CLAUDE_MEM_URL}/api/sessions/summarize`, {
       method: 'POST',
@@ -57,7 +66,9 @@ async function saveMemSummary(contentSessionId: string, request: string, complet
       }),
       signal: AbortSignal.timeout(5000),
     })
-  } catch { /* non-critical */ }
+  } catch (err) {
+    process.stderr.write(`[messages] saveMemSummary failed (non-fatal): ${err}\n`)
+  }
 }
 
 // ─── Conversation history + context-window management ────────────────────
@@ -92,6 +103,7 @@ function buildConversationPrompt(
   let used = 0
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i]
+    if (!m) continue
     const label = m.role === 'user' ? 'Human' : 'Assistant'
     const entry = `${label}: ${m.content}`
     const t = estimateTokens(entry)
@@ -411,11 +423,17 @@ function sseStream(
 
     // Keepalive: send SSE comment every 15s so the Vite proxy / any intermediary
     // doesn't close the connection during slow models (high TTFT).
+    let aborted = false
     const keepalive = setInterval(() => {
-      void stream.write(': keepalive\n\n')
+      if (aborted) return
+      stream.write(': keepalive\n\n').catch(() => {
+        aborted = true
+        clearInterval(keepalive)
+      })
     }, 15_000)
 
     stream.onAbort(() => {
+      aborted = true
       clearInterval(keepalive)
       cancelRunner(sessionId)
     })
@@ -423,15 +441,17 @@ function sseStream(
     const buildExtra = (): Record<string, unknown> => {
       const extra: Record<string, unknown> = {}
       if (usage) {
-        const costs = getModelCost(modelId)
         extra['input_tokens'] = usage.input_tokens
         extra['output_tokens'] = usage.output_tokens
-        extra['estimated_cost'] = parseFloat(
-          (
-            (usage.input_tokens * costs.input_per_m) / 1_000_000 +
-            (usage.output_tokens * costs.output_per_m) / 1_000_000
-          ).toFixed(6)
-        )
+        const costs = getModelCost(modelId)
+        if (costs) {
+          extra['estimated_cost'] = parseFloat(
+            (
+              (usage.input_tokens * costs.input_per_m) / 1_000_000 +
+              (usage.output_tokens * costs.output_per_m) / 1_000_000
+            ).toFixed(6)
+          )
+        }
       }
       if (turnToolCalls.length > 0) {
         extra['tool_calls'] = [...turnToolCalls]
@@ -540,7 +560,10 @@ router.post('/:id/messages', async (c) => {
     prompt = `${prompt}\n\nAttached files:\n${fileList}`
   }
 
-  void addMessage(sessionId, 'user', content)  // fire-and-forget — sseStream returns immediately
+  // Persist the user message before kicking off the stream. The save itself
+  // is fast (one tiny atomic write) and the per-session lock means assistant
+  // saves later in the SSE handler don't race with this one.
+  await addMessage(sessionId, 'user', content)
 
   // Media models (image/video) bypass openclaude — the CLI never emits stdout events for them.
   const modelType = inferModelType(session.model_id)

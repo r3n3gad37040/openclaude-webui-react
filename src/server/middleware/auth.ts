@@ -1,4 +1,5 @@
 import type { Context, Next } from 'hono'
+import { timingSafeEqual } from 'crypto'
 import { getAuthToken } from '../services/config.js'
 
 const rateLimits = new Map<string, number[]>()
@@ -14,8 +15,14 @@ function checkRateLimit(ip: string): boolean {
   return true
 }
 
-function isLoopback(ip: string): boolean {
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
+function getClientIp(c: Context): string | null {
+  // Prefer the typed access point Hono exposes; fall back to env.incoming
+  // for older adapter versions. If we can't determine the IP, return null
+  // and the caller should treat it as a denial — fail closed, never assume
+  // loopback.
+  const incoming = c.env?.['incoming'] as { socket?: { remoteAddress?: string } } | undefined
+  const ip = incoming?.socket?.remoteAddress
+  return ip ? String(ip) : null
 }
 
 function extractToken(c: Context): string {
@@ -29,24 +36,38 @@ function extractToken(c: Context): string {
   return ''
 }
 
+// Length-padded constant-time compare so an attacker can't probe the token
+// length via response timing.
+function constantTimeEquals(a: string, b: string): boolean {
+  const lenA = Buffer.byteLength(a, 'utf8')
+  const lenB = Buffer.byteLength(b, 'utf8')
+  const max = Math.max(lenA, lenB, 1)
+  const ba = Buffer.alloc(max)
+  const bb = Buffer.alloc(max)
+  ba.write(a, 'utf8')
+  bb.write(b, 'utf8')
+  return timingSafeEqual(ba, bb) && lenA === lenB
+}
+
 export function authMiddleware() {
   return async (c: Context, next: Next) => {
-    const incoming = c.env?.['incoming'] as { socket?: { remoteAddress?: string } } | undefined
-    const ip = incoming?.socket?.remoteAddress ?? '127.0.0.1'
+    const stored = getAuthToken()
 
-    if (isLoopback(String(ip))) {
+    // No token configured at all → single-user local-only mode, anonymous
+    // access is allowed. The 127.0.0.1 listener bind is the security gate.
+    if (!stored) {
       await next()
       return
     }
 
-    if (!checkRateLimit(String(ip))) {
+    // Token configured → all requests require it, including loopback.
+    const ip = getClientIp(c) ?? 'unknown'
+    if (!checkRateLimit(ip)) {
       return c.json({ error: 'Too many requests' }, 429)
     }
 
     const token = extractToken(c)
-    const stored = getAuthToken()
-
-    if (!stored || token !== stored) {
+    if (!token || !constantTimeEquals(token, stored)) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
 
@@ -54,4 +75,4 @@ export function authMiddleware() {
   }
 }
 
-export { checkRateLimit, isLoopback, extractToken }
+export { checkRateLimit, extractToken, constantTimeEquals }

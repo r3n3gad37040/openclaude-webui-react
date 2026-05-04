@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { Model, Provider, Preferences } from '../../types/index.js'
@@ -18,13 +18,18 @@ mkdirSync(SESSIONS_DIR, { recursive: true })
 // ─── Proxy routing map — single source of truth ────────────────────────────
 // All providers route through local Hono proxies that strip the Claude identity
 // openclaude injects. Do NOT replace entries with direct provider base_urls.
+// Built dynamically from PORT so changing the API port doesn't strand
+// openclaude pointing at the wrong place.
+const API_PORT = parseInt(process.env['PORT'] ?? '8789')
+const PROXY_BASE = `http://localhost:${API_PORT}`
 export const PROXY_MAP: Record<string, string> = {
-  openrouter: 'http://localhost:8789/or-proxy',
-  venice: 'http://localhost:8789/venice-proxy',
-  xai: 'http://localhost:8789/xai-proxy',
-  groq: 'http://localhost:8789/groq-proxy',
-  dolphin: 'http://localhost:8789/dolphin-proxy',
-  nineteen: 'http://localhost:8789/nineteen-proxy',
+  anthropic: `${PROXY_BASE}/anthropic-proxy`,
+  openrouter: `${PROXY_BASE}/or-proxy`,
+  venice: `${PROXY_BASE}/venice-proxy`,
+  xai: `${PROXY_BASE}/xai-proxy`,
+  groq: `${PROXY_BASE}/groq-proxy`,
+  dolphin: `${PROXY_BASE}/dolphin-proxy`,
+  nineteen: `${PROXY_BASE}/nineteen-proxy`,
 }
 
 export const PROVIDER_MAP: Record<string, { base_url: string; env_key: string }> = {
@@ -67,13 +72,20 @@ function readJson<T>(path: string, fallback: T): T {
   if (!existsSync(path)) return fallback
   try {
     return JSON.parse(readFileSync(path, 'utf-8')) as T
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[config] readJson(${path}) parse failed: ${err}\n`)
     return fallback
   }
 }
 
+// Atomic JSON write: tmp + rename so a kill-during-write leaves the
+// previous valid file in place rather than a half-written one. Sync API
+// here because callers are infrequent (key rotation, prefs save) and the
+// surrounding code is sync.
 function writeJson(path: string, data: unknown): void {
-  writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8')
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8')
+  renameSync(tmp, path)
 }
 
 // ─── Env file ─────────────────────────────────────────────────────────────
@@ -97,12 +109,20 @@ export function readEnvFile(path = ENV_FILE): Record<string, string> {
   return env
 }
 
+// Quote a value for safe inclusion in a shell-sourced file. Single-quoting
+// disables every shell metachar except `'` itself, which we escape by
+// closing-quoting-escaping-reopening: `'\''`. Using single quotes (rather
+// than double) means we don't have to worry about $, `, \, !, etc.
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
 export function writeEnvFile(env: Record<string, string>): void {
   const lines = [
     '# OpenClaude Environment Configuration',
     '# Auto-updated by OpenClaude Web UI',
     '',
-    ...Object.entries(env).map(([k, v]) => `export ${k}="${v}"`),
+    ...Object.entries(env).map(([k, v]) => `export ${k}=${shellEscape(v)}`),
     '',
   ]
   writeFileSync(ENV_FILE, lines.join('\n'), 'utf-8')
@@ -321,20 +341,60 @@ export function getAuthToken(): string {
 
 // ─── Cost estimation ──────────────────────────────────────────────────────
 
+// Per-model token cost in dollars per million. Order-sensitive: more
+// specific patterns first (e.g. opus-4-6 before just 'claude'). Numbers
+// are best-effort approximations for the most common SKUs at the time of
+// writing — actual per-provider pricing may differ. When no pattern
+// matches, getModelCost returns null so the UI can show "—" instead of a
+// misleading guess.
 const COST_MAP: Array<[string, number, number]> = [
-  ['kimi-k2', 2.0, 8.0],
-  ['grok-3', 3.0, 15.0],
-  ['grok-4', 5.0, 20.0],
-  ['llama-4-maverick', 0.2, 0.8],
-  ['gemma', 0.4, 1.6],
-  ['deepseek', 0.5, 2.0],
+  // Anthropic
+  ['claude-opus-4-7', 15.0, 75.0],
+  ['claude-opus-4-6', 15.0, 75.0],
+  ['claude-opus-4', 15.0, 75.0],
+  ['claude-sonnet-4-6', 3.0, 15.0],
+  ['claude-sonnet-4', 3.0, 15.0],
+  ['claude-haiku-4-5', 1.0, 5.0],
+  ['claude-haiku-4', 1.0, 5.0],
   ['claude', 3.0, 15.0],
+  // xAI
+  ['grok-4', 5.0, 20.0],
+  ['grok-3', 3.0, 15.0],
+  ['grok', 3.0, 15.0],
+  // Moonshot
+  ['kimi-k2-6', 2.0, 8.0],
+  ['kimi-k2', 2.0, 8.0],
+  ['kimi', 2.0, 8.0],
+  // Deepseek
+  ['deepseek-v4', 0.5, 2.0],
+  ['deepseek-v3', 0.27, 1.1],
+  ['deepseek', 0.5, 2.0],
+  // Meta
+  ['llama-4-maverick', 0.2, 0.8],
+  ['llama-4', 0.2, 0.8],
+  ['llama-3', 0.15, 0.6],
+  // Google
+  ['gemini-2', 0.15, 0.6],
+  ['gemini', 0.15, 0.6],
+  ['gemma', 0.05, 0.15],
+  // Mistral
+  ['mistral-large', 2.0, 6.0],
+  ['mistral', 0.4, 1.5],
+  // OpenAI
+  ['gpt-5', 5.0, 15.0],
+  ['gpt-4o', 2.5, 10.0],
+  ['gpt-4', 5.0, 15.0],
+  ['o4', 3.0, 12.0],
+  ['o3', 3.0, 12.0],
+  // Qwen
+  ['qwen3', 0.4, 1.5],
+  ['qwen', 0.4, 1.5],
 ]
 
-export function getModelCost(modelId: string): { input_per_m: number; output_per_m: number } {
+export function getModelCost(modelId: string): { input_per_m: number; output_per_m: number } | null {
   const lower = modelId.toLowerCase()
   for (const [key, inp, out] of COST_MAP) {
     if (lower.includes(key)) return { input_per_m: inp, output_per_m: out }
   }
-  return { input_per_m: 1.0, output_per_m: 4.0 }
+  return null
 }

@@ -11,6 +11,8 @@
  *    Routes /chat/completions → /videos/generations, polls if async.
  */
 import { Hono } from 'hono'
+import { readBoundedText } from '../services/http.js'
+import { stripInjectedIdentity } from '../services/identity.js'
 
 const XAI_BASE = 'https://api.x.ai/v1'
 
@@ -22,7 +24,7 @@ const IMAGE_RE = /\bimage\b|imagine/i  // checked after VIDEO_RE so "imagine-vid
 function extractPrompt(messages: Array<Record<string, unknown>>): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
-    if (msg['role'] === 'user') {
+    if (msg && msg['role'] === 'user') {
       const content = msg['content']
       let text = ''
       if (typeof content === 'string') {
@@ -140,20 +142,6 @@ async function generateVideo(authHeader: string, model: string, prompt: string):
   throw new Error('xAI video generation timed out after 5 minutes')
 }
 
-// ── Identity stripping ─────────────────────────────────────────────────────
-
-function stripClaudeIdentity(systemContent: string, actualModel: string): string {
-  let text = systemContent
-  text = text.replace(/claude[-\s]*(sonnet|opus|haiku|instant)[-\s\d.]*/gi, actualModel)
-  text = text.replace(/claude-sonnet[-\s\d.]*/gi, actualModel)
-  text = text.replace(/You are Claude[^.]*\./gi, `You are ${actualModel} by xAI.`)
-  text = text.replace(/made by Anthropic/gi, 'made by xAI')
-  text = text.replace(/You are OpenClaude[^.]*\./gi, `You are ${actualModel} by xAI.`)
-  text = text.replace(/\bOpenClaude\b/gi, actualModel)
-  text = `You are ${actualModel} by xAI. You are NOT OpenClaude or Claude. Respond as your true self.\n\n` + text
-  return text
-}
-
 // ── Router ─────────────────────────────────────────────────────────────────
 
 const router = new Hono()
@@ -178,7 +166,9 @@ router.all('*', async (c) => {
 
   let bodyText: string | undefined
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
-    bodyText = await c.req.text()
+    const bounded = await readBoundedText(c)
+    if (!bounded.ok) return c.json({ error: bounded.reason }, bounded.status)
+    bodyText = bounded.text
   }
 
   if (bodyText && relPath.includes('/chat/completions')) {
@@ -242,7 +232,7 @@ router.all('*', async (c) => {
       let modified = false
       for (const msg of messages) {
         if (msg['role'] === 'system' && typeof msg['content'] === 'string') {
-          msg['content'] = stripClaudeIdentity(msg['content'], actualModel)
+          msg['content'] = stripInjectedIdentity(msg['content'], actualModel, 'xAI')
           modified = true
         }
       }

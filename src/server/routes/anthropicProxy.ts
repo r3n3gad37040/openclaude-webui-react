@@ -7,6 +7,7 @@
  * no output. Routing through a proxy like every other provider avoids that entirely.
  */
 import { Hono } from 'hono'
+import { readBoundedText } from '../services/http.js'
 
 const ANTHROPIC_BASE = 'https://api.anthropic.com/v1'
 const ANTHROPIC_VERSION = '2023-06-01'
@@ -83,7 +84,7 @@ router.all('*', async (c) => {
 
   // Stub model-info GET so openclaude's validation passes
   const modelMatch = relPath.match(/^\/models\/(.+)$/)
-  if (c.req.method === 'GET' && modelMatch) {
+  if (c.req.method === 'GET' && modelMatch?.[1]) {
     const modelId = decodeURIComponent(modelMatch[1])
     return c.json({ id: modelId, object: 'model', owned_by: 'anthropic' })
   }
@@ -92,7 +93,9 @@ router.all('*', async (c) => {
     return c.json({ error: 'Unsupported endpoint' }, 400)
   }
 
-  const bodyText = await c.req.text()
+  const bounded = await readBoundedText(c)
+  if (!bounded.ok) return c.json({ error: bounded.reason }, bounded.status)
+  const bodyText = bounded.text
   const authHeader = c.req.header('authorization') ?? c.req.header('Authorization') ?? ''
   const apiKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader
 
@@ -131,11 +134,18 @@ router.all('*', async (c) => {
   anthropicHeaders.set('anthropic-version', ANTHROPIC_VERSION)
   anthropicHeaders.set('content-type', 'application/json')
 
-  const upstreamRes = await fetch(`${ANTHROPIC_BASE}/messages`, {
-    method: 'POST',
-    headers: anthropicHeaders,
-    body: JSON.stringify(anthropicBody),
-  })
+  let upstreamRes: Response
+  try {
+    upstreamRes = await fetch(`${ANTHROPIC_BASE}/messages`, {
+      method: 'POST',
+      headers: anthropicHeaders,
+      body: JSON.stringify(anthropicBody),
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`[anthropicProxy] upstream fetch failed: ${msg}\n`)
+    return c.json({ error: { message: `Anthropic request failed: ${msg}`, type: 'upstream_error' } }, 502)
+  }
 
   if (!upstreamRes.ok) {
     const errText = await upstreamRes.text()

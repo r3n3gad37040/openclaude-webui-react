@@ -25,6 +25,8 @@
 import { Hono } from 'hono'
 import { getModelEntry, inferModelType } from '../services/config.js'
 import { saveBase64Media, saveBytesMedia } from '../services/media.js'
+import { readBoundedText } from '../services/http.js'
+import { stripInjectedIdentity } from '../services/identity.js'
 
 const VENICE_BASE = 'https://api.venice.ai/api/v1'
 
@@ -38,11 +40,12 @@ function pruneMediaCache() {
   const now = Date.now()
   for (const [k, v] of mediaCache) if (now - v.ts > MEDIA_CACHE_TTL) mediaCache.delete(k)
 }
+setInterval(pruneMediaCache, MEDIA_CACHE_TTL).unref()
 
 function extractPrompt(messages: Array<Record<string, unknown>>): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
-    if (msg['role'] !== 'user') continue
+    if (!msg || msg['role'] !== 'user') continue
     const content = msg['content']
     let text = ''
     if (typeof content === 'string') text = content
@@ -149,19 +152,6 @@ async function generateVeniceImage(authHeader: string, model: string, prompt: st
   return url
 }
 
-function stripClaudeIdentity(systemContent: string, actualModel: string): string {
-  let text = systemContent
-  // Match old Claude identity patterns (≤0.6.x)
-  text = text.replace(/claude[-\s]*(sonnet|opus|haiku|instant)[-\s\d.]*/gi, actualModel)
-  text = text.replace(/claude-sonnet[-\s\d.]*/gi, actualModel)
-  text = text.replace(/You are Claude[^.]*\./gi, `You are ${actualModel} via Venice.ai.`)
-  text = text.replace(/made by Anthropic/gi, 'served via Venice.ai')
-  // Match new OpenClaude identity (≥0.7.0)
-  text = text.replace(/You are OpenClaude[^.]*\./gi, `You are ${actualModel} via Venice.ai.`)
-  text = text.replace(/\bOpenClaude\b/gi, actualModel)
-  text = `You are ${actualModel} served via Venice.ai. You are NOT OpenClaude or Claude. Respond as your true self.\n\n` + text
-  return text
-}
 
 router.all('*', async (c) => {
   const urlObj = new URL(c.req.url)
@@ -177,7 +167,9 @@ router.all('*', async (c) => {
 
   let bodyText: string | undefined
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
-    bodyText = await c.req.text()
+    const bounded = await readBoundedText(c)
+    if (!bounded.ok) return c.json({ error: bounded.reason }, bounded.status)
+    bodyText = bounded.text
   }
 
   // ── Image generation routing: detect image model and route to /image/generate ──
@@ -240,7 +232,7 @@ router.all('*', async (c) => {
         let modified = false
         for (const msg of messages) {
           if (msg['role'] === 'system' && typeof msg['content'] === 'string') {
-            msg['content'] = stripClaudeIdentity(msg['content'], actualModel)
+            msg['content'] = stripInjectedIdentity(msg['content'], actualModel, 'Venice.ai')
             modified = true
           }
         }
@@ -254,7 +246,14 @@ router.all('*', async (c) => {
   const doFetch = (body: string | undefined) =>
     fetch(targetUrl, { method: c.req.method, headers: forwardHeaders, body })
 
-  let upstreamRes = await doFetch(bodyText)
+  let upstreamRes: Response
+  try {
+    upstreamRes = await doFetch(bodyText)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`[veniceProxy] upstream fetch failed: ${msg}\n`)
+    return c.json({ error: { message: `Venice request failed: ${msg}`, type: 'upstream_error' } }, 502)
+  }
 
   // ── Bug 2: thinking-mode 400 retry ────────────────────────────────────────
   // Venice DeepSeek thinking models require reasoning_content to be passed back
@@ -295,56 +294,70 @@ router.all('*', async (c) => {
   }
 
   // ── Bug 1: Rewrite SSE stream — copy reasoning_content → content ──────────
+  // The previous version split each chunk by '\n' and processed lines without
+  // buffering the trailing partial line. SSE events split across TCP chunks
+  // (which they do, on long reasoning streams) would have half their JSON
+  // parsed (failing) and the other half stitched onto the next chunk's first
+  // line, producing garbage. Same buffer + `lines.pop()` pattern as
+  // proxyFactory.ts and runner.ts now.
   const upstream = upstreamRes.body.getReader()
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
+  let buf = ''
+
+  const processLines = (lines: string[]): string => {
+    const out: string[] = []
+    for (const line of lines) {
+      if (!line.startsWith('data: ') || line === 'data: [DONE]') {
+        out.push(line)
+        continue
+      }
+      try {
+        const chunk = JSON.parse(line.slice(6)) as {
+          choices?: Array<{
+            delta?: {
+              content?: string
+              reasoning_content?: string
+              reasoning_details?: Array<{ text?: string }>
+            }
+          }>
+        }
+        const delta = chunk.choices?.[0]?.delta
+        if (delta && (delta.content === '' || delta.content == null)) {
+          const reasoningText =
+            delta.reasoning_content ??
+            delta.reasoning_details?.map((d) => d.text ?? '').join('') ??
+            ''
+          if (reasoningText) {
+            delta.content = reasoningText
+            delete delta.reasoning_content
+            delete delta.reasoning_details
+          }
+        }
+        out.push('data: ' + JSON.stringify(chunk))
+      } catch (err) {
+        process.stderr.write(`[veniceProxy] SSE rewrite parse error: ${err}\n`)
+        out.push(line)
+      }
+    }
+    return out.join('\n')
+  }
 
   const rewritten = new ReadableStream({
     async pull(controller) {
-      while (true) {
-        const { done, value } = await upstream.read()
-        if (done) { controller.close(); return }
-
-        const text = decoder.decode(value, { stream: true })
-        const lines = text.split('\n')
-        const out: string[] = []
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ') || line === 'data: [DONE]') {
-            out.push(line)
-            continue
-          }
-          try {
-            const chunk = JSON.parse(line.slice(6)) as {
-              choices?: Array<{
-                delta?: {
-                  content?: string
-                  reasoning_content?: string
-                  reasoning_details?: Array<{ text?: string }>
-                }
-              }>
-            }
-            const delta = chunk.choices?.[0]?.delta
-            if (delta && (delta.content === '' || delta.content == null)) {
-              // Promote reasoning_content to content so openclaude sees it
-              const reasoningText =
-                delta.reasoning_content ??
-                delta.reasoning_details?.map((d) => d.text ?? '').join('') ??
-                ''
-              if (reasoningText) {
-                delta.content = reasoningText
-                delete delta.reasoning_content
-                delete delta.reasoning_details
-              }
-            }
-            out.push('data: ' + JSON.stringify(chunk))
-          } catch {
-            out.push(line)
-          }
-        }
-
-        controller.enqueue(encoder.encode(out.join('\n')))
+      const { done, value } = await upstream.read()
+      if (done) {
+        if (buf) controller.enqueue(encoder.encode(buf))
+        controller.close()
+        return
       }
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      // Re-append the line terminator so out lines join back to a valid SSE
+      // chunk; the upstream stream uses '\n' separation.
+      const out = processLines(lines) + (lines.length ? '\n' : '')
+      if (out) controller.enqueue(encoder.encode(out))
     },
     cancel() { upstream.cancel() },
   })

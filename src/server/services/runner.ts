@@ -41,6 +41,11 @@ export interface Runner {
 
 const activeRunners = new Map<string, Runner>()
 
+// Hard cap on concurrent openclaude subprocesses. Single-user app, so even 8
+// is a luxurious ceiling; the real purpose is to bound runaway behavior
+// (buggy client opening 100 streams) rather than gate legitimate use.
+const MAX_CONCURRENT_RUNNERS = parseInt(process.env['MAX_CONCURRENT_RUNNERS'] ?? '8')
+
 function buildEnv(modelId: string): NodeJS.ProcessEnv {
   const env = { ...process.env }
 
@@ -367,6 +372,14 @@ function buildEffectiveSystemPrompt(
   return parts.length ? parts.join('\n\n') : null
 }
 
+// Synthetic "runner" for refused spawns — emits a single error event so
+// the SSE handler can surface a clear message to the user instead of
+// crashing the response stream.
+async function* errorEvents(message: string): AsyncGenerator<RunnerEvent> {
+  yield { type: 'error', content: message }
+  yield { type: 'done' }
+}
+
 export function startRunner(
   sessionId: string,
   modelId: string,
@@ -374,6 +387,19 @@ export function startRunner(
   options: { systemPrompt?: string; temperaturePreset?: string } = {}
 ): Runner {
   cancelRunner(sessionId)
+
+  // Concurrency cap. Counted AFTER cancelling any existing runner for this
+  // session so a re-send doesn't double-count.
+  if (activeRunners.size >= MAX_CONCURRENT_RUNNERS) {
+    return {
+      sessionId,
+      proc: { exitCode: 1 } as unknown as ChildProcess,
+      cancel: () => {},
+      events: errorEvents(
+        `Too many concurrent model runs (${activeRunners.size}/${MAX_CONCURRENT_RUNNERS}). Wait for an existing one to finish or cancel it.`,
+      ),
+    }
+  }
 
   const env = buildEnv(modelId)
   const effectivePrompt = buildEffectiveSystemPrompt(options.systemPrompt, options.temperaturePreset)
@@ -392,9 +418,15 @@ export function startRunner(
     cmd.push('--append-system-prompt', effectivePrompt)
   }
 
-  const proc = spawn(cmd[0], cmd.slice(1), {
+  const [bin, ...args] = cmd
+  if (!bin) throw new Error('runner: empty command')
+  // detached:true puts openclaude in its own process group so we can SIGKILL
+  // the whole group on cancel — kills any tool-use grandchildren openclaude
+  // may have spawned (Bash, etc.) instead of orphaning them.
+  const proc = spawn(bin, args, {
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: true,
   })
 
   // Capture stderr (capped) so silent crashes surface in the API log AND in
@@ -414,18 +446,29 @@ export function startRunner(
 
   const aborted = { value: false }
 
+  // Kill the whole process group (negative PID) so tool-use grandchildren
+  // die with the parent.
+  const killGroup = (sig: NodeJS.Signals) => {
+    if (proc.pid === undefined) return
+    try { process.kill(-proc.pid, sig) } catch { /* group may already be gone */ }
+  }
   const cancel = () => {
     aborted.value = true
     if (proc.exitCode === null) {
-      try { proc.kill('SIGTERM') } catch { /* ignore */ }
+      killGroup('SIGTERM')
       setTimeout(() => {
-        if (proc.exitCode === null) {
-          try { proc.kill('SIGKILL') } catch { /* ignore */ }
-        }
+        if (proc.exitCode === null) killGroup('SIGKILL')
       }, 1500)
     }
     activeRunners.delete(sessionId)
   }
+
+  // Natural completion: when the child exits, drop it from the active map
+  // so the SSE handler's "successful done" path doesn't leave a dangling
+  // entry in activeRunners forever. (Previously only cancel() removed.)
+  proc.once('exit', () => {
+    activeRunners.delete(sessionId)
+  })
 
   if (proc.stdin) {
     proc.stdin.write(message + '\n')

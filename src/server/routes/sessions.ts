@@ -35,7 +35,7 @@ router.post('/', async (c) => {
   const modelId = body.model_id ?? getCurrentPrimaryModel()
   if (!modelId) return c.json({ error: 'No model selected' }, 400)
   const prefs = loadPreferences()
-  const session = createSession(modelId, body.title, {
+  const session = await createSession(modelId, body.title, {
     system_prompt: body.system_prompt ?? prefs.default_system_prompt,
     temperature_preset: (body.temperature_preset as never) ?? prefs.default_temperature_preset,
   })

@@ -16,6 +16,7 @@ import xaiProxy from './routes/xaiProxy.js'
 import groqProxy from './routes/groqProxy.js'
 import dolphinProxy from './routes/dolphinProxy.js'
 import nineteenProxy from './routes/nineteenProxy.js'
+import anthropicProxy from './routes/anthropicProxy.js'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -24,6 +25,35 @@ const IS_PROD = process.env['NODE_ENV'] === 'production'
 const DIST_DIR = join(process.cwd(), 'dist/ui')
 
 const app = new Hono()
+
+// ─── Security headers ─────────────────────────────────────────────────────
+// CSP defends against XSS in markdown-rendered model output. The bundle
+// loads ES modules + an external Google Fonts stylesheet so we have to
+// allow those origins explicitly. SSE responses set their own headers so
+// this middleware only applies to non-stream paths.
+app.use('*', async (c, next) => {
+  await next()
+  // Don't override headers on SSE — Hono streamSSE manages its own.
+  const ct = c.res.headers.get('content-type') ?? ''
+  if (ct.includes('text/event-stream')) return
+  c.res.headers.set(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' https://fonts.gstatic.com",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' blob: data:",
+      "connect-src 'self'",
+      "frame-ancestors 'none'",
+      "base-uri 'self'",
+    ].join('; '),
+  )
+  c.res.headers.set('X-Content-Type-Options', 'nosniff')
+  c.res.headers.set('Referrer-Policy', 'no-referrer')
+  c.res.headers.set('X-Frame-Options', 'DENY')
+})
 
 // ─── CORS ──────────────────────────────────────────────────────────────────
 app.use(
@@ -36,32 +66,38 @@ app.use(
   })
 )
 
-// ─── Provider proxies (no auth — openclaude calls these directly) ────────
+// ─── Provider proxies — only reachable from localhost (server binds to
+// 127.0.0.1 below). The local openclaude subprocess calls these. No
+// per-request auth: the loopback bind is the gate. ───────────────────────
 app.route('/or-proxy', openrouterProxy)
 app.route('/venice-proxy', veniceProxy)
 app.route('/xai-proxy', xaiProxy)
 app.route('/groq-proxy', groqProxy)
 app.route('/dolphin-proxy', dolphinProxy)
 app.route('/nineteen-proxy', nineteenProxy)
+app.route('/anthropic-proxy', anthropicProxy)
 
-// ─── Attachment serving (no auth needed — single-user local app) ─────────
-app.route('/api', uploadRoutes)
-app.route('/api', mediaRoutes)
+// Lightweight liveness probe — never does I/O. Mounted before the auth
+// middleware so external supervisors can check without a token.
+app.get('/api/healthz', (c) => c.json({ ok: true }))
 
 // ─── Auth middleware on all /api routes except /api/auth ──────────────────
+// Applied BEFORE the route handlers so upload/media/attachment endpoints
+// (which used to be mounted before the middleware) are also gated.
 app.use('/api/*', async (c, next) => {
-  if (c.req.path === '/api/auth') return next()
+  if (c.req.path === '/api/auth' || c.req.path === '/api/healthz') return next()
   return authMiddleware()(c, next)
 })
 
 // ─── API routes ────────────────────────────────────────────────────────────
+app.route('/api', uploadRoutes)
+app.route('/api', mediaRoutes)
 app.route('/api/sessions', sessionRoutes)
 // Message routes at both /api/sessions/:id/messages (RESTful) and /api/messages/:id/messages
 app.route('/api/sessions', messageRoutes)
 app.route('/api/messages', messageRoutes)
 app.route('/api', modelRoutes)
 app.route('/api', statusRoutes)
-app.route('/api', uploadRoutes)
 
 // In production, serve the built React app
 if (IS_PROD && existsSync(DIST_DIR)) {
@@ -75,43 +111,42 @@ if (IS_PROD && existsSync(DIST_DIR)) {
   })
 }
 
-// ─── Server lifecycle — restartable without process death ────────────────
+// ─── Server lifecycle ─────────────────────────────────────────────────────
 
 let server: ServerType | null = null
 
-export function getServer(): ServerType | null {
-  return server
-}
+// Bind loopback-only. Documented threat model is single-user local-only,
+// and this gates all non-localhost traffic at the listener — defense in
+// depth alongside the auth middleware on /api/*.
+server = serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (info) => {
+  console.log(`[server] OpenClaude API running on http://localhost:${info.port}`)
+})
 
-export async function restartServer(): Promise<void> {
-  // Close the existing server if running
+// ─── Graceful shutdown ────────────────────────────────────────────────────
+// Close the listener so no new connections are accepted, give in-flight
+// requests a few seconds to drain (active SSE streams especially), then
+// exit. Previously SIGTERM dropped active streams immediately.
+const SHUTDOWN_GRACE_MS = 5_000
+let shuttingDown = false
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`[server] ${signal} received, draining…`)
   if (server) {
     await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        console.log('[server] grace period elapsed, forcing exit')
+        resolve()
+      }, SHUTDOWN_GRACE_MS)
       server!.close(() => {
-        console.log('[server] Old server closed')
+        clearTimeout(timer)
         resolve()
       })
     })
-    // Give the OS a moment to release the port
-    await new Promise((r) => setTimeout(r, 100))
   }
-
-  // Start a fresh server on the same port
-  server = serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`[server] OpenClaude API running on http://localhost:${info.port}`)
-  })
+  process.exit(0)
 }
 
-// ─── Start ────────────────────────────────────────────────────────────────
-
-void restartServer()
-
-// ─── Graceful shutdown ────────────────────────────────────────────────────
-process.on('SIGTERM', () => {
-  console.log('[server] SIGTERM received, shutting down...')
-  process.exit(0)
-})
-process.on('SIGINT', () => {
-  console.log('[server] SIGINT received, shutting down...')
-  process.exit(0)
-})
+process.on('SIGTERM', () => { void shutdown('SIGTERM') })
+process.on('SIGINT', () => { void shutdown('SIGINT') })

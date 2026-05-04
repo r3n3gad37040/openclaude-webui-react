@@ -3,20 +3,9 @@
  * All providers: strip /v1 double-prefix, stub model-info GET, rewrite system message identity.
  */
 import { Hono } from 'hono'
+import { readBoundedText } from '../services/http.js'
+import { stripInjectedIdentity } from '../services/identity.js'
 
-function stripClaudeIdentity(systemContent: string, actualModel: string, providerName: string): string {
-  let text = systemContent
-  // Match old Claude identity patterns (≤0.6.x)
-  text = text.replace(/claude[-\s]*(sonnet|opus|haiku|instant)[-\s\d.]*/gi, actualModel)
-  text = text.replace(/claude-sonnet[-\s\d.]*/gi, actualModel)
-  text = text.replace(/You are Claude[^.]*\./gi, `You are ${actualModel} by ${providerName}.`)
-  text = text.replace(/made by Anthropic/gi, `made by ${providerName}`)
-  // Match new OpenClaude identity (≥0.7.0)
-  text = text.replace(/You are OpenClaude[^.]*\./gi, `You are ${actualModel} by ${providerName}.`)
-  text = text.replace(/\bOpenClaude\b/gi, actualModel)
-  text = `You are ${actualModel} by ${providerName}. You are NOT OpenClaude or Claude. Respond as your true self.\n\n` + text
-  return text
-}
 
 // Transform a Groq Compound SSE stream:
 // - Renames delta.reasoning → delta.content (Compound uses non-standard field)
@@ -181,6 +170,10 @@ function pruneCache() {
   }
 }
 
+// Prune on a timer too so the cache shrinks even on workloads that never
+// trigger requiresStreaming (which is the only on-request prune trigger).
+setInterval(pruneCache, CACHE_TTL_MS).unref()
+
 export interface ProxyOptions {
   pathPrefix: string            // e.g. "groq-proxy"
   baseUrl: string               // e.g. "https://api.groq.com/openai/v1"
@@ -202,7 +195,7 @@ export function createGenericProxy(opts: ProxyOptions): Hono {
 
     // Stub model-info GET so openclaude's validation passes
     const modelMatch = relPath.match(/^\/models\/(.+)$/)
-    if (c.req.method === 'GET' && modelMatch) {
+    if (c.req.method === 'GET' && modelMatch?.[1]) {
       const modelId = decodeURIComponent(modelMatch[1])
       return c.json({ id: modelId, object: 'model', owned_by: opts.ownedBy })
     }
@@ -218,7 +211,9 @@ export function createGenericProxy(opts: ProxyOptions): Hono {
 
     let bodyText: string | undefined
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
-      bodyText = await c.req.text()
+      const bounded = await readBoundedText(c)
+      if (!bounded.ok) return c.json({ error: bounded.reason }, bounded.status)
+      bodyText = bounded.text
     }
 
     let streamCacheKey: string | null = null
@@ -270,7 +265,7 @@ export function createGenericProxy(opts: ProxyOptions): Hono {
           let modified = false
           for (const msg of messages) {
             if (msg['role'] === 'system' && typeof msg['content'] === 'string') {
-              msg['content'] = stripClaudeIdentity(msg['content'], actualModel, opts.providerName)
+              msg['content'] = stripInjectedIdentity(msg['content'], actualModel, opts.providerName)
               modified = true
             }
           }
@@ -281,12 +276,22 @@ export function createGenericProxy(opts: ProxyOptions): Hono {
       } catch { /* not JSON — forward as-is */ }
     }
 
-    const upstreamRes = await fetch(targetUrl, {
-      method: c.req.method,
-      headers: forwardHeaders,
-      body: bodyText,
-      signal: AbortSignal.timeout(600_000), // 10 min — Deepseek can be very slow
-    })
+    let upstreamRes: Response
+    try {
+      upstreamRes = await fetch(targetUrl, {
+        method: c.req.method,
+        headers: forwardHeaders,
+        body: bodyText,
+        signal: AbortSignal.timeout(600_000), // 10 min — Deepseek can be very slow
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      process.stderr.write(`[proxy:${opts.providerName}] upstream fetch failed: ${msg}\n`)
+      return c.json(
+        { error: { message: `Upstream ${opts.providerName} request failed: ${msg}`, type: 'upstream_error' } },
+        502,
+      )
+    }
 
     const responseHeaders = new Headers(upstreamRes.headers)
     responseHeaders.delete('content-encoding')
