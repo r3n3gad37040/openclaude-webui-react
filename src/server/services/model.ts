@@ -119,11 +119,14 @@ export async function discoverAndSaveModels(
   const raw = await fetchProviderModels(provider, key)
   // Drop STT / classifier models — they need a file-upload UX we don't have.
   // Surfacing them in the chat-model picker just produces broken sessions.
-  const models = raw.filter((m) => !isAudioInputModel(m.id) && !isAudioInputModel(m.model))
-  if (models.length > 0) {
-    saveModels(models, provider)
+  const filtered = raw.filter((m) => !isAudioInputModel(m.id) && !isAudioInputModel(m.model))
+  if (filtered.length > 0) {
+    saveModels(filtered, provider)
   }
-  return models
+  // Discovery returns ModelWithContext (type optional). For the public Model[]
+  // contract, default missing types to 'text' — matches what getConfiguredModels
+  // does via regex inference at read time.
+  return filtered.map((m) => ({ ...m, type: m.type ?? 'text' }))
 }
 
 // ─── Switching ────────────────────────────────────────────────────────────

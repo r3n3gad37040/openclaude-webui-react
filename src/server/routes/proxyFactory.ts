@@ -285,6 +285,7 @@ export function createGenericProxy(opts: ProxyOptions): Hono {
       method: c.req.method,
       headers: forwardHeaders,
       body: bodyText,
+      signal: AbortSignal.timeout(600_000), // 10 min — Deepseek can be very slow
     })
 
     const responseHeaders = new Headers(upstreamRes.headers)

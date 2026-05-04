@@ -114,6 +114,26 @@ function buildEnv(modelId: string): NodeJS.ProcessEnv {
     if (key) env[meta.env_key] = key
   }
 
+  // Prevent the openclaude CLI from aborting long-running requests.
+  // Deepseek via OpenRouter routinely exceeds the 60 s default timeout.
+  env['API_TIMEOUT_MS'] = env['API_TIMEOUT_MS'] || '600000'
+
+  // The webui freshly spawns openclaude per turn with the full packed history,
+  // so the CLI's internal auto-compact never has anything to summarize — but it
+  // still triggers (assuming a 128k window for unknown models) and fires a
+  // same-model summarization API call that silently kills long-horizon turns.
+  env['DISABLE_AUTO_COMPACT'] = '1'
+  env['DISABLE_COMPACT'] = '1'
+
+  // Tell openclaude the real context window for the active model so it stops
+  // assuming the conservative 128k fallback (and stops spamming stderr with the
+  // "[context] Warning: model not in integration model metadata" line on every
+  // token-count check).
+  const ctxWindow = modelEntry?.context_window
+  if (ctxWindow && ctxWindow > 0) {
+    env['CLAUDE_CODE_OPENAI_FALLBACK_CONTEXT_WINDOW'] = String(ctxWindow)
+  }
+
   env['CLAUDE_CONFIG_DIR'] = join(homedir(), '.openclaw-openclaude')
   env['FORCE_COLOR'] = '0'
   env['TERM'] = 'dumb'
@@ -311,17 +331,20 @@ async function* readEvents(
   }
 
   // stdout closed without a result event — openclaude exited (or crashed) early.
-  // If nothing was streamed, surface the failure with stderr context so the UI
-  // doesn't render a phantom empty turn.
+  // Surface the failure to the user in BOTH cases (no output at all, or partial
+  // stream then silent death) so the UI never renders a half-complete turn that
+  // looks like the model just stopped talking. Previously the partial-output
+  // case only logged server-side, which is exactly the silent-disconnect bug.
   if (!resultSeen && !aborted.value) {
     const exitCode = proc.exitCode
     const tail = stderrTail()
     if (!anyEmitted) {
       const summary = tail.trim() || `openclaude exited (code ${exitCode ?? 'unknown'}) with no output`
       yield { type: 'error', content: summary.slice(-2000) }
-    } else if (tail.trim()) {
-      // Partial output then crash — log the tail for diagnostics
+    } else {
       process.stderr.write(`[runner] openclaude exited mid-stream (code ${exitCode}); stderr tail:\n${tail.slice(-2000)}\n`)
+      const reason = tail.trim().slice(-500) || `exit code ${exitCode ?? 'unknown'}`
+      yield { type: 'error', content: `[response cut off mid-stream — ${reason}]` }
     }
   }
 
@@ -372,7 +395,6 @@ export function startRunner(
   const proc = spawn(cmd[0], cmd.slice(1), {
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
-    encoding: 'utf8',
   })
 
   // Capture stderr (capped) so silent crashes surface in the API log AND in

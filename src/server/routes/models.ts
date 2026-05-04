@@ -35,9 +35,10 @@ router.get('/model', (c) => {
 })
 
 router.post('/switch-model', async (c) => {
+  type SwitchBody = { provider?: string; model?: string; api_key?: string; discover?: boolean; session_id?: string }
   const body = await c.req
-    .json<{ provider?: string; model?: string; api_key?: string; discover?: boolean; session_id?: string }>()
-    .catch(() => ({}))
+    .json<SwitchBody>()
+    .catch((): SwitchBody => ({}))
 
   const provider = (body.provider ?? '').trim().toLowerCase()
   const model = (body.model ?? '').trim()
@@ -59,9 +60,10 @@ router.post('/switch-model', async (c) => {
 })
 
 router.post('/discover-models', async (c) => {
+  type DiscoverBody = { provider?: string; api_key?: string }
   const body = await c.req
-    .json<{ provider?: string; api_key?: string }>()
-    .catch(() => ({}))
+    .json<DiscoverBody>()
+    .catch((): DiscoverBody => ({}))
 
   const provider = (body.provider ?? '').trim().toLowerCase()
   const apiKey = body.api_key?.trim() || undefined
@@ -84,9 +86,10 @@ router.get('/provider_keys', (c) => {
 })
 
 router.post('/provider_keys', async (c) => {
+  type KeyBody = { provider?: string; api_key?: string }
   const body = await c.req
-    .json<{ provider?: string; api_key?: string }>()
-    .catch(() => ({}))
+    .json<KeyBody>()
+    .catch((): KeyBody => ({}))
 
   const provider = (body.provider ?? '').trim().toLowerCase()
   const apiKey = (body.api_key ?? '').trim()

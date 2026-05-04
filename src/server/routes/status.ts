@@ -121,7 +121,7 @@ router.post('/preferences', async (c) => {
 })
 
 router.post('/auth', async (c) => {
-  const body = await c.req.json<{ token?: string }>().catch(() => ({}))
+  const body = await c.req.json<{ token?: string }>().catch((): { token?: string } => ({}))
   const { getAuthToken } = await import('../services/config.js')
   const stored = getAuthToken()
   if (stored && body.token === stored) {

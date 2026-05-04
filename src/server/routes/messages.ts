@@ -69,14 +69,22 @@ function estimateTokens(text: string): number {
 // contextWindow: per-model total context. Reserve 40% for output + system overhead.
 // Default 128K covers most models; small OpenRouter free models should have context_window
 // set via discovery.
+// Hard ceiling on packed-prompt size regardless of advertised model window.
+// Venice/OpenRouter models that claim 1M context routinely degrade or fail
+// past ~200k input tokens — long-horizon turns end up "thinking forever then
+// disappearing" because the upstream API stalls on absurd prompts. Keep
+// history compact; the user's most recent turns are what matter anyway.
+const MAX_INPUT_TOKENS = 200_000
+
 function buildConversationPrompt(
   history: Array<{ role: string; content: string }>,
   content: string,
   memCtx: string,
   contextWindow = 128_000
 ): string {
-  // 60% of total context for all input (history + memory + current)
-  const inputBudget = Math.floor(contextWindow * 0.6)
+  // 60% of total context for all input (history + memory + current),
+  // capped at MAX_INPUT_TOKENS so 1M-window models don't pack runaway prompts.
+  const inputBudget = Math.min(Math.floor(contextWindow * 0.6), MAX_INPUT_TOKENS)
   const historyBudget = inputBudget - estimateTokens(memCtx) - estimateTokens(content)
 
   // Walk backwards: keep newest turns that fit within the token budget
@@ -399,7 +407,7 @@ function sseStream(
     let responseText = ''
     let usage: { input_tokens: number; output_tokens: number } | null = null
     const turnToolCalls: ToolCall[] = []
-    const turnMedia: Array<{ url: string; media_type: 'image' | 'video'; alt?: string; width?: number; height?: number }> = []
+    const turnMedia: Array<{ url: string; media_type: 'image' | 'video' | 'audio'; alt?: string; width?: number; height?: number }> = []
 
     // Keepalive: send SSE comment every 15s so the Vite proxy / any intermediary
     // doesn't close the connection during slow models (high TTFT).
@@ -497,11 +505,12 @@ router.post('/:id/messages', async (c) => {
   const session = getSession(sessionId)
   if (!session) return c.json({ error: 'Session not found' }, 404)
 
-  const body = await c.req.json<{
+  type MsgBody = {
     message?: string
     content?: string
     attachments?: Array<{ name: string; path: string; size: number }>
-  }>().catch(() => ({}))
+  }
+  const body = await c.req.json<MsgBody>().catch((): MsgBody => ({}))
 
   const content = (body.message ?? body.content ?? '').trim()
   if (!content && !body.attachments?.length) return c.json({ error: 'Empty message' }, 400)
@@ -552,7 +561,7 @@ router.post('/:id/cancel', (c) => {
 })
 
 router.post('/regenerate', async (c) => {
-  const body = await c.req.json<{ session_id?: string }>().catch(() => ({}))
+  const body = await c.req.json<{ session_id?: string }>().catch((): { session_id?: string } => ({}))
   const sessionId = body.session_id ?? ''
   if (!sessionId) return c.json({ error: 'session_id is required' }, 400)
 

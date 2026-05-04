@@ -25,12 +25,13 @@ router.get('/', (c) => {
 })
 
 router.post('/', async (c) => {
-  const body = await c.req.json<{
+  type CreateBody = {
     model_id?: string
     title?: string
     system_prompt?: string
     temperature_preset?: string
-  }>().catch(() => ({}))
+  }
+  const body = await c.req.json<CreateBody>().catch((): CreateBody => ({}))
   const modelId = body.model_id ?? getCurrentPrimaryModel()
   if (!modelId) return c.json({ error: 'No model selected' }, 400)
   const prefs = loadPreferences()
@@ -66,7 +67,7 @@ router.delete('/:id', (c) => {
 })
 
 router.post('/:id/rename', async (c) => {
-  const body = await c.req.json<{ title?: string }>().catch(() => ({}))
+  const body = await c.req.json<{ title?: string }>().catch((): { title?: string } => ({}))
   if (!body.title) return c.json({ error: 'Title is required' }, 400)
   const session = await renameSession(c.req.param('id'), body.title)
   if (!session) return c.json({ error: 'Session not found' }, 404)
@@ -96,7 +97,7 @@ router.get('/:id/export', (c) => {
 })
 
 router.post('/:id/delete-message', async (c) => {
-  const body = await c.req.json<{ index?: number }>().catch(() => ({}))
+  const body = await c.req.json<{ index?: number }>().catch((): { index?: number } => ({}))
   if (body.index === undefined) return c.json({ error: 'Message index is required' }, 400)
   const ok = await deleteMessage(c.req.param('id'), body.index)
   if (!ok) return c.json({ error: 'Delete failed' }, 400)
@@ -104,7 +105,7 @@ router.post('/:id/delete-message', async (c) => {
 })
 
 router.post('/:id/truncate', async (c) => {
-  const body = await c.req.json<{ from_index?: number }>().catch(() => ({}))
+  const body = await c.req.json<{ from_index?: number }>().catch((): { from_index?: number } => ({}))
   if (body.from_index === undefined) return c.json({ error: 'from_index is required' }, 400)
   const ok = await truncateMessagesFrom(c.req.param('id'), body.from_index)
   if (!ok) return c.json({ error: 'Truncate failed' }, 400)
