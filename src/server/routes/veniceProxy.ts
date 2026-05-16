@@ -95,7 +95,7 @@ async function generateVeniceVideo(authHeader: string, model: string, prompt: st
   const queueRes = await fetch(`${VENICE_BASE}/video/queue`, {
     method: 'POST',
     headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt, duration: '4s', resolution: '480p', aspect_ratio: '16:9' }),
+    body: JSON.stringify({ model, prompt, duration: '4s', resolution: '1080p', aspect_ratio: '16:9' }),
   })
   if (!queueRes.ok) {
     const err = await queueRes.text()
