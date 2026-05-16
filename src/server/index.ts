@@ -17,6 +17,7 @@ import groqProxy from './routes/groqProxy.js'
 import dolphinProxy from './routes/dolphinProxy.js'
 import nineteenProxy from './routes/nineteenProxy.js'
 import anthropicProxy from './routes/anthropicProxy.js'
+import firecrawlRoutes from './routes/firecrawl.js'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -98,6 +99,7 @@ app.route('/api/sessions', messageRoutes)
 app.route('/api/messages', messageRoutes)
 app.route('/api', modelRoutes)
 app.route('/api', statusRoutes)
+app.route('/api/firecrawl', firecrawlRoutes)
 
 // In production, serve the built React app
 if (IS_PROD && existsSync(DIST_DIR)) {
