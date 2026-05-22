@@ -18,6 +18,7 @@ import dolphinProxy from './routes/dolphinProxy.js'
 import nineteenProxy from './routes/nineteenProxy.js'
 import anthropicProxy from './routes/anthropicProxy.js'
 import firecrawlRoutes from './routes/firecrawl.js'
+import veniceVideo from './routes/veniceVideo.js'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -100,6 +101,7 @@ app.route('/api/messages', messageRoutes)
 app.route('/api', modelRoutes)
 app.route('/api', statusRoutes)
 app.route('/api/firecrawl', firecrawlRoutes)
+app.route('/api/venice', veniceVideo)
 
 // In production, serve the built React app
 if (IS_PROD && existsSync(DIST_DIR)) {

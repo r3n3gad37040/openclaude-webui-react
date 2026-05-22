@@ -26,10 +26,10 @@ mkdir -p "$APP_DIR"
 # Copy source files explicitly — never touch node_modules or state
 for item in dist src vite.config.ts tsconfig.json tsconfig.node.json \
             package.json package-lock.json \
-            start.sh install.sh openclaude-webui.desktop; do
+            start.sh stop.sh launch.sh install.sh openclaude-webui.desktop; do
     [ -e "$item" ] && cp -r "$item" "$APP_DIR/"
 done
-chmod +x "$APP_DIR/start.sh" "$APP_DIR/install.sh"
+chmod +x "$APP_DIR/start.sh" "$APP_DIR/stop.sh" "$APP_DIR/launch.sh" "$APP_DIR/install.sh"
 
 # ─── 3. Install npm dependencies ──────────────────────────────────────────
 echo "[3/4] Installing npm dependencies..."
@@ -71,5 +71,6 @@ echo "  Launch from your application menu:"
 echo "    → OpenClaude Web UI"
 echo ""
 echo "  Or from terminal:"
-echo "    $APP_DIR/start.sh"
+echo "    $APP_DIR/launch.sh     (silent — browser opens, tab close kills servers)"
+echo "    $APP_DIR/start.sh      (manual — terminal stays open)"
 echo "═══════════════════════════════════════════"

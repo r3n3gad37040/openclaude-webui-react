@@ -189,8 +189,8 @@ export function isMusicModel(modelId: string): boolean {
 export function inferModelType(modelId: string): ModelType {
   const id = modelId.toLowerCase()
   // Video checked first so "grok-imagine-video" doesn't match image pattern
-  if (/video|mochi|wan[._-]|kling|cogvideo|animate|minimax[._-]vid/i.test(id)) return 'video'
-  if (/flux|imagen|\bimage\b|imagine|stable[._-]diff|sdxl|hidream|aura|dall[._-]e|playground[._-]v|wai[._-]nsfw/i.test(id)) return 'image'
+  if (/video|mochi|wan[._-]|kling|cogvideo|animate|minimax[._-]vid|veo|sora|pixverse|vidu|topaz.*video|ltx.*video|longcat.*video|happyhorse|seedance|ovi.*video/i.test(id)) return 'video'
+  if (/flux|imagen|\bimage\b|imagine|stable[._-]diff|sdxl|hidream|aura|dall[._-]e|playground[._-]v|wai[._-]nsfw|seedream|recraft|qwen-image|hunyuan.*image|gpt-image|nano-banana|imagineart|lustify|sd35|ideogram|midjourney|leonardo|cogview|cogview-4|z-image|kolors|kontext|bria|tencent-hunyuan/i.test(id)) return 'image'
   // Music takes precedence over audio (TTS) since some patterns overlap (e.g. elevenlabs)
   if (isMusicModel(id)) return 'music'
   if (/orpheus|kokoro|elevenlabs|chatterbox|inworld|[\/._-]tts[\/._-]|[\/._-]tts$|^tts[\/._-]|speech|[\/._-]audio[\/._-]/i.test(id)) return 'audio'

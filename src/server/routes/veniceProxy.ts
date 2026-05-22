@@ -90,12 +90,15 @@ function makeFakeJSON(model: string, content: string): Record<string, unknown> {
   }
 }
 
-async function generateVeniceVideo(authHeader: string, model: string, prompt: string): Promise<string> {
+async function generateVeniceVideo(authHeader: string, model: string, prompt: string, opts?: { duration?: string; aspect_ratio?: string; resolution?: string }): Promise<string> {
+  const duration = opts?.duration ?? '8s'
+  const resolution = opts?.resolution ?? '1080p'
+  const aspect_ratio = opts?.aspect_ratio ?? '16:9'
   // 1. Queue the job
   const queueRes = await fetch(`${VENICE_BASE}/video/queue`, {
     method: 'POST',
     headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt, duration: '4s', resolution: '1080p', aspect_ratio: '16:9' }),
+    body: JSON.stringify({ model, prompt, duration, resolution, aspect_ratio }),
   })
   if (!queueRes.ok) {
     const err = await queueRes.text()
@@ -198,10 +201,16 @@ router.all('*', async (c) => {
         const prompt = extractPrompt(messages)
         if (!prompt) return c.json({ error: 'No prompt found in messages' }, 400)
 
+        const videoOpts = {
+          duration: (parsed['duration'] as string | undefined),
+          aspect_ratio: (parsed['aspect_ratio'] as string | undefined),
+          resolution: (parsed['resolution'] as string | undefined),
+        }
+
         let mediaUrl: string
         try {
           mediaUrl = type === 'video'
-            ? await generateVeniceVideo(authHeader, model, prompt)
+            ? await generateVeniceVideo(authHeader, model, prompt, videoOpts)
             : await generateVeniceImage(authHeader, model, prompt)
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)

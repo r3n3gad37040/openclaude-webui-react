@@ -28,8 +28,8 @@
 
   function inferType(id) {
     const s = (id || '').toLowerCase()
-    if (/video|mochi|wan[._-]|kling|cogvideo|animate/.test(s)) return 'video'
-    if (/flux|imagen|\bimage\b|imagine|stable[._-]diff|sdxl|hidream|aura|dall[._-]e|wai[._-]nsfw/.test(s)) return 'image'
+    if (/video|mochi|wan[._-]|kling|cogvideo|animate|veo|sora|pixverse|vidu|topaz.*video|ltx.*video|longcat.*video|happyhorse|seedance|ovi.*video/.test(s)) return 'video'
+    if (/flux|imagen|\bimage\b|imagine|stable[._-]diff|sdxl|hidream|aura|dall[._-]e|wai[._-]nsfw|seedream|recraft|qwen-image|hunyuan.*image|gpt-image|nano-banana|imagineart|lustify|sd35|ideogram|midjourney|leonardo|cogview|kolors|kontext|bria/.test(s)) return 'image'
     // Music checked before audio so overlapping patterns (e.g. elevenlabs-music) hit music
     if (/ace[._-]step|minimax[._-]music|stable[._-]audio|mmaudio|elevenlabs[._-]music|sound[._-]effects/.test(s)) return 'music'
     if (/whisper|orpheus|kokoro|elevenlabs|chatterbox|inworld|[._-]tts[._-]|[._-]tts$|^tts[._-]|speech/.test(s)) return 'audio'

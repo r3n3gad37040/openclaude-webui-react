@@ -1,9 +1,9 @@
 [Desktop Entry]
 Name=OpenClaude Web UI
 Comment=Multi-provider AI chat interface
-Exec=bash -c "cd $HOME/openclaude-webui && bash start.sh"
+Exec=bash -c "cd $HOME/openclaude-webui && bash launch.sh"
 Icon=$HOME/openclaude-webui/src/ui/assets/icon.png
-Terminal=true
+Terminal=false
 Type=Application
 Categories=Development;Network;Chat;
 StartupNotify=true
