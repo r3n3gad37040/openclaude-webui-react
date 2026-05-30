@@ -348,10 +348,7 @@ export function startRunner(
     cmd.push('--append-system-prompt', effectivePrompt)
   }
 
-  const proc = spawn(cmd[0], cmd.slice(1), {
-    env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
+  const proc: ChildProcess = spawn(cmd[0]!, cmd.slice(1), { env })
 
   // Drain stderr so the 64KB pipe buffer never blocks openclaude
   proc.stderr?.resume()

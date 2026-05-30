@@ -104,7 +104,7 @@ export async function discoverAndSaveModels(
 
   const models = await fetchProviderModels(provider, key)
   if (models.length > 0) {
-    saveModels(models, provider)
+    saveModels(models as Parameters<typeof saveModels>[0], provider)
   }
   return models.filter(m => m.type !== undefined) as Model[]
 }

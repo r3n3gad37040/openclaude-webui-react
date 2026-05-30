@@ -79,71 +79,36 @@ export const Chat: React.FC = () => {
     connect(activeSessionId, currentModelId, content, {
       onChunk: (chunk) => {
         assistantContent += chunk
-        setMessages(prev => {
-          const next = [...prev]
-          const idx = next.findIndex(m => m.id === assistantId)
-          if (idx !== -1) {
-            next[idx] = { ...next[idx], content: assistantContent }
-          }
-          return next
-        })
+        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: assistantContent } : m))
       },
       onToolStart: (name, _id) => {
-        setMessages(prev => {
-          const next = [...prev]
-          const idx = next.findIndex(m => m.id === assistantId)
-          if (idx !== -1) {
-            next[idx] = {
-              ...next[idx],
-              tool_calls: [...(next[idx].tool_calls ?? []), { tool_id: _id, name, input: '' }],
-            }
-          }
-          return next
-        })
+        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, tool_calls: [...(m.tool_calls ?? []), { tool_id: _id!, name, input: '' }] } : m))
       },
       onToolDone: (_name, _id, input) => {
-        setMessages(prev => {
-          const next = [...prev]
-          const idx = next.findIndex(m => m.id === assistantId)
-          if (idx !== -1) {
-            const tcs = next[idx].tool_calls ?? []
-            const ti = tcs.findIndex(t => t.tool_id === _id)
-            if (ti !== -1) tcs[ti] = { ...tcs[ti], input }
-          }
-          return next
-        })
+        setMessages(prev => prev.map(m => {
+          if (m.id !== assistantId) return m
+          const tcs = m.tool_calls ?? []
+          const ti = tcs.findIndex(t => t.tool_id === _id)
+          if (ti !== -1) { const prev = tcs[ti]!; tcs[ti] = { tool_id: prev.tool_id, name: prev.name, input } }
+          return { ...m, tool_calls: tcs }
+        }))
       },
       onUsage: (input_tokens, output_tokens) => {
-        setMessages(prev => {
-          const next = [...prev]
-          const idx = next.findIndex(m => m.id === assistantId)
-          if (idx !== -1) {
-            const costModel = { input_per_m: 3.0, output_per_m: 15.0 } // default Claude rates
-            const cost = parseFloat(((input_tokens * costModel.input_per_m) / 1_000_000 + (output_tokens * costModel.output_per_m) / 1_000_000).toFixed(6))
-            next[idx] = { ...next[idx], input_tokens, output_tokens, estimated_cost: cost }
-          }
-          return next
-        })
+        setMessages(prev => prev.map(m => {
+          if (m.id !== assistantId) return m
+          const costModel = { input_per_m: 3.0, output_per_m: 15.0 }
+          const cost = parseFloat(((input_tokens * costModel.input_per_m) / 1_000_000 + (output_tokens * costModel.output_per_m) / 1_000_000).toFixed(6))
+          return { ...m, input_tokens, output_tokens, estimated_cost: cost }
+        }))
       },
       onMedia: (url, media_type, alt) => {
         pendingMediaRef.current.push({ url, media_type, alt })
-        setMessages(prev => {
-          const next = [...prev]
-          const idx = next.findIndex(m => m.id === assistantId)
-          if (idx !== -1) {
-            next[idx] = {
-              ...next[idx],
-              generated_media: [...(next[idx].generated_media ?? []), { url, media_type, alt }],
-            }
-          }
-          return next
-        })
+        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, generated_media: [...(m.generated_media ?? []), { url, media_type, alt }] } : m))
       },
       onDone: () => {
         if (!aborted) {
           void useAppStore.getState().fetchStatus()
-          void useAppStore.getState().fetchSessions() // refresh session list (title may have updated)
-          // Refetch from server to get persisted state
+          void useAppStore.getState().fetchSessions()
           api.getSession(activeSessionId).then(s => {
             setMessages(s.messages ?? [])
           })
@@ -151,14 +116,7 @@ export const Chat: React.FC = () => {
       },
       onError: (err) => {
         if (!aborted) {
-          setMessages(prev => {
-            const next = [...prev]
-            const idx = next.findIndex(m => m.id === assistantId)
-            if (idx !== -1) {
-              next[idx] = { ...next[idx], content: next[idx].content + `\n\n⚠️ Error: ${err}` }
-            }
-            return next
-          })
+          setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: m.content + `\n\n⚠️ Error: ${err}` } : m))
         }
       },
     }, controller.signal)
