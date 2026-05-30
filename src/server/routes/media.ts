@@ -1,20 +1,21 @@
 import { Hono } from 'hono'
-import { readFileSync, existsSync, statSync } from 'fs'
+import { existsSync, createReadStream } from 'fs'
+import { stat } from 'fs/promises'
 import { join, basename, extname, resolve } from 'path'
 import { homedir } from 'os'
+import { Readable } from 'stream'
 import { MEDIA_DIR } from '../services/media.js'
 
 const HOME = homedir()
 
-// Allowed directories for media serving — expand as needed
+// Allowed directories for media serving. Kept narrow on purpose: only the
+// webui's own upload + generated-media directories. Previously included
+// ~/Pictures, ~/Downloads, /tmp, and ~/.hermes/audio_cache, which let
+// authenticated callers read arbitrary files in those trees by guessing
+// names — too broad even for a single-user local app.
 const ALLOWED_ROOTS = [
   join(HOME, 'openclaude-webui', 'uploads'),
-  join(HOME, '.hermes', 'audio_cache'),
-  join(HOME, 'voice-memos'),
-  join(HOME, 'Pictures'),
-  join(HOME, 'Downloads'),
   MEDIA_DIR,
-  '/tmp',
 ]
 
 function isPathSafe(requested: string): string | null {
@@ -51,69 +52,69 @@ const MIME_MAP: Record<string, string> = {
 
 const router = new Hono()
 
+// Stream a file (or range slice) without loading it into memory. Previously
+// used readFileSync — a 1 GB video served via a small range request still
+// loaded the entire 1 GB. createReadStream({ start, end }) seeks instead.
+function streamFile(filePath: string, contentType: string, totalSize: number, range?: string): Response {
+  const headers: Record<string, string> = {
+    'Content-Type': contentType,
+    'Cache-Control': 'public, max-age=3600',
+    'Accept-Ranges': 'bytes',
+  }
+
+  if (range && (contentType.startsWith('video/') || contentType.startsWith('audio/'))) {
+    const parts = range.replace('bytes=', '').split('-')
+    const start = parseInt(parts[0] ?? '0', 10)
+    const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1
+    if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end >= totalSize || start > end) {
+      return new Response('Invalid range', { status: 416, headers: { 'Content-Range': `bytes */${totalSize}` } })
+    }
+    headers['Content-Range'] = `bytes ${start}-${end}/${totalSize}`
+    headers['Content-Length'] = String(end - start + 1)
+    const node = createReadStream(filePath, { start, end })
+    return new Response(Readable.toWeb(node) as ReadableStream, { status: 206, headers })
+  }
+
+  headers['Content-Length'] = String(totalSize)
+  const node = createReadStream(filePath)
+  return new Response(Readable.toWeb(node) as ReadableStream, { headers })
+}
+
 // GET /api/media/serve?path=/absolute/path/to/file
 // Serves media files from allowed directories only.
-router.get('/media/serve', (c) => {
+router.get('/media/serve', async (c) => {
   const rawPath = c.req.query('path')
   if (!rawPath) return c.json({ error: 'Missing path parameter' }, 400)
 
   const safePath = isPathSafe(rawPath)
   if (!safePath) return c.json({ error: 'Access denied — path not in allowed directories' }, 403)
-
   if (!existsSync(safePath)) return c.json({ error: 'File not found' }, 404)
 
-  const ext = extname(safePath).toLowerCase()
-  const contentType = MIME_MAP[ext] ?? 'application/octet-stream'
-
   try {
-    const stat = statSync(safePath)
-    const data = readFileSync(safePath)
-
-    const headers: Record<string, string> = {
-      'Content-Type': contentType,
-      'Content-Length': String(stat.size),
-      'Cache-Control': 'public, max-age=3600',
-      'Accept-Ranges': 'bytes',
-    }
-
-    // For videos, support range requests
-    const range = c.req.header('Range')
-    if (range && (contentType.startsWith('video/') || contentType.startsWith('audio/'))) {
-      const parts = range.replace('bytes=', '').split('-')
-      const start = parseInt(parts[0] ?? '0', 10)
-      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1
-      const chunkSize = end - start + 1
-
-      headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`
-      headers['Content-Length'] = String(chunkSize)
-
-      return new Response(data.subarray(start, end + 1), {
-        status: 206,
-        headers,
-      })
-    }
-
-    return new Response(data, { headers })
-  } catch {
+    const st = await stat(safePath)
+    const ext = extname(safePath).toLowerCase()
+    const contentType = MIME_MAP[ext] ?? 'application/octet-stream'
+    return streamFile(safePath, contentType, st.size, c.req.header('Range'))
+  } catch (err) {
+    process.stderr.write(`[media] serve(${safePath}) failed: ${err}\n`)
     return c.json({ error: 'Error reading file' }, 500)
   }
 })
 
 // GET /api/media/serve/:name — serve by filename from uploads dir (shortcut)
-router.get('/media/serve/:name', (c) => {
+router.get('/media/serve/:name', async (c) => {
   const name = basename(c.req.param('name'))
   const filePath = join(HOME, 'openclaude-webui', 'uploads', name)
   if (!existsSync(filePath)) return c.json({ error: 'Not found' }, 404)
-
-  const ext = extname(name).toLowerCase()
-  const contentType = MIME_MAP[ext] ?? 'application/octet-stream'
-  const data = readFileSync(filePath)
-  return new Response(data, {
-    headers: {
-      'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=3600',
-    },
-  })
+  try {
+    const st = await stat(filePath)
+    const ext = extname(name).toLowerCase()
+    const contentType = MIME_MAP[ext] ?? 'application/octet-stream'
+    return streamFile(filePath, contentType, st.size, c.req.header('Range'))
+  } catch (err) {
+    process.stderr.write(`[media] serve(${filePath}) failed: ${err}\n`)
+    return c.json({ error: 'Error reading file' }, 500)
+  }
 })
 
 export default router

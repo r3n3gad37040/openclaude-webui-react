@@ -32,24 +32,13 @@
 import { Hono } from 'hono'
 import { getModelEntry, inferModelType } from '../services/config.js'
 import { saveBase64Media } from '../services/media.js'
+import { readBoundedText } from '../services/http.js'
+import { stripInjectedIdentity } from '../services/identity.js'
 
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
 
 const router = new Hono()
 
-function stripClaudeIdentity(systemContent: string, actualModel: string): string {
-  let text = systemContent
-  // Match old Claude identity patterns (≤0.6.x)
-  text = text.replace(/claude[-\s]*(sonnet|opus|haiku|instant)[-\s\d.]*/gi, actualModel)
-  text = text.replace(/claude-sonnet[-\s\d.]*/gi, actualModel)
-  text = text.replace(/You are Claude[^.]*\./gi, `You are ${actualModel} via OpenRouter.`)
-  text = text.replace(/made by Anthropic/gi, 'served via OpenRouter')
-  // Match new OpenClaude identity (≥0.7.0)
-  text = text.replace(/You are OpenClaude[^.]*\./gi, `You are ${actualModel} via OpenRouter.`)
-  text = text.replace(/\bOpenClaude\b/gi, actualModel)
-  text = `You are ${actualModel} served via OpenRouter. You are NOT OpenClaude or Claude. Respond as your true self.\n\n` + text
-  return text
-}
 
 const TOOL_USE_KEYWORDS = ['tool use', 'tool_use', 'function call', 'No endpoints found', 'tools']
 
@@ -189,7 +178,7 @@ router.all('*', async (c) => {
 
   // ── Bug 1: Model-info GET ──────────────────────────────────────────────────
   const modelMatch = relPath.match(/^\/models\/(.+)$/)
-  if (c.req.method === 'GET' && modelMatch) {
+  if (c.req.method === 'GET' && modelMatch?.[1]) {
     const modelId = decodeURIComponent(modelMatch[1])
     const apiKey = c.req.header('Authorization')?.replace('Bearer ', '') ?? ''
     try {
@@ -218,7 +207,9 @@ router.all('*', async (c) => {
 
   let bodyText: string | undefined
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
-    bodyText = await c.req.text()
+    const bounded = await readBoundedText(c)
+    if (!bounded.ok) return c.json({ error: bounded.reason }, bounded.status)
+    bodyText = bounded.text
   }
 
   // ── Image generation: inject modalities, then rewrite response to MEDIA:url ──
@@ -255,7 +246,7 @@ router.all('*', async (c) => {
         let modified = false
         for (const msg of messages) {
           if (msg['role'] === 'system' && typeof msg['content'] === 'string') {
-            msg['content'] = stripClaudeIdentity(msg['content'], actualModel)
+            msg['content'] = stripInjectedIdentity(msg['content'], actualModel, 'OpenRouter')
             modified = true
           }
         }

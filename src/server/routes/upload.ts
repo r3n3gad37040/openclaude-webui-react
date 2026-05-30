@@ -1,7 +1,9 @@
 import { Hono } from 'hono'
-import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, createReadStream } from 'fs'
+import { writeFile, stat } from 'fs/promises'
 import { join, basename, extname } from 'path'
 import { homedir } from 'os'
+import { Readable } from 'stream'
 
 const UPLOADS_DIR = join(homedir(), 'openclaude-webui', 'uploads')
 mkdirSync(UPLOADS_DIR, { recursive: true })
@@ -18,14 +20,22 @@ const MIME_MAP: Record<string, string> = {
 
 const router = new Hono()
 
-router.get('/attachments/:name', (c) => {
+router.get('/attachments/:name', async (c) => {
   const name = basename(c.req.param('name'))
   const filePath = join(UPLOADS_DIR, name)
   if (!existsSync(filePath)) return c.json({ error: 'Not found' }, 404)
   const ext = extname(name).toLowerCase()
   const contentType = MIME_MAP[ext] ?? 'application/octet-stream'
-  const data = readFileSync(filePath)
-  return new Response(data, { headers: { 'Content-Type': contentType } })
+  try {
+    const st = await stat(filePath)
+    const node = createReadStream(filePath)
+    return new Response(Readable.toWeb(node) as ReadableStream, {
+      headers: { 'Content-Type': contentType, 'Content-Length': String(st.size) },
+    })
+  } catch (err) {
+    process.stderr.write(`[upload] attachments(${name}) failed: ${err}\n`)
+    return c.json({ error: 'Error reading file' }, 500)
+  }
 })
 
 router.post('/upload', async (c) => {
@@ -65,7 +75,7 @@ router.post('/upload', async (c) => {
     }
 
     const buf = await value.arrayBuffer()
-    writeFileSync(dest, Buffer.from(buf))
+    await writeFile(dest, Buffer.from(buf))
     uploaded.push({ name: basename(dest), path: dest, size: value.size })
   }
 

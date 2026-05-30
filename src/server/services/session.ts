@@ -1,26 +1,60 @@
 import { readFileSync, existsSync, readdirSync, unlinkSync } from 'fs'
-import { writeFile } from 'fs/promises'
+import { writeFile, rename } from 'fs/promises'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { SESSIONS_DIR } from './config.js'
 import type { Session, SessionSummary, Message, TemperaturePreset } from '../../types/index.js'
 
+// ─── Per-session async mutex ─────────────────────────────────────────────
+// Two near-simultaneous writes to the same session.json (e.g. user message
+// fire-and-forget save racing the assistant-reply save) can lose one of
+// them. Serialize per-id so reads always see consistent state.
+const sessionLocks = new Map<string, Promise<unknown>>()
+function withSessionLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sessionLocks.get(id) ?? Promise.resolve()
+  const next = prev.then(fn, fn)  // run fn whether prev resolved or rejected
+  // Track only completion (never reject the lock chain itself).
+  sessionLocks.set(id, next.catch(() => undefined))
+  return next
+}
+
+// UUIDs are the only valid session ids — created via randomUUID() and never
+// user-supplied. Reject anything else so a malicious client can't smuggle
+// path-traversal sequences (`../`) through `/api/sessions/:id` routes and
+// read or delete files outside SESSIONS_DIR.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function sessionPath(id: string): string {
+  if (!UUID_RE.test(id)) {
+    throw new Error(`Invalid session id: ${id}`)
+  }
   return join(SESSIONS_DIR, `${id}.json`)
 }
 
 function readSession(id: string): Session | null {
-  const p = sessionPath(id)
+  let p: string
+  try {
+    p = sessionPath(id)
+  } catch {
+    return null
+  }
   if (!existsSync(p)) return null
   try {
     return JSON.parse(readFileSync(p, 'utf-8')) as Session
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[session] readSession(${id}) parse failed: ${err}\n`)
     return null
   }
 }
 
+// Atomic write: tmp file + rename. If the process dies mid-write, the
+// destination still holds the previous valid JSON instead of a half-written
+// blob that readSession would silently treat as a missing session.
 async function saveSession(session: Session): Promise<void> {
-  await writeFile(sessionPath(session.id), JSON.stringify(session, null, 2), 'utf-8')
+  const dest = sessionPath(session.id)
+  const tmp = `${dest}.${process.pid}.${Date.now()}.tmp`
+  await writeFile(tmp, JSON.stringify(session, null, 2), 'utf-8')
+  await rename(tmp, dest)
 }
 
 export function listSessions(): SessionSummary[] {
@@ -54,11 +88,11 @@ export function getSession(id: string): Session | null {
   return readSession(id)
 }
 
-export function createSession(
+export async function createSession(
   modelId: string,
   title = 'New Chat',
   options: { system_prompt?: string; temperature_preset?: TemperaturePreset } = {}
-): Session {
+): Promise<Session> {
   const now = new Date().toISOString()
   const session: Session = {
     id: randomUUID(),
@@ -70,33 +104,42 @@ export function createSession(
     ...(options.system_prompt ? { system_prompt: options.system_prompt } : {}),
     ...(options.temperature_preset ? { temperature_preset: options.temperature_preset } : {}),
   }
-  void saveSession(session)  // fire-and-forget — caller doesn't await the disk write
+  await withSessionLock(session.id, () => saveSession(session))
   return session
 }
 
 export function deleteSession(id: string): boolean {
-  const p = sessionPath(id)
+  let p: string
+  try {
+    p = sessionPath(id)
+  } catch {
+    return false
+  }
   if (!existsSync(p)) return false
   unlinkSync(p)
   return true
 }
 
 export async function renameSession(id: string, title: string): Promise<Session | null> {
-  const session = readSession(id)
-  if (!session) return null
-  session.title = title
-  session.updated_at = new Date().toISOString()
-  await saveSession(session)
-  return session
+  return withSessionLock(id, async () => {
+    const session = readSession(id)
+    if (!session) return null
+    session.title = title
+    session.updated_at = new Date().toISOString()
+    await saveSession(session)
+    return session
+  })
 }
 
 export async function updateSessionModelId(id: string, modelId: string): Promise<Session | null> {
-  const session = readSession(id)
-  if (!session) return null
-  session.model_id = modelId
-  session.updated_at = new Date().toISOString()
-  await saveSession(session)
-  return session
+  return withSessionLock(id, async () => {
+    const session = readSession(id)
+    if (!session) return null
+    session.model_id = modelId
+    session.updated_at = new Date().toISOString()
+    await saveSession(session)
+    return session
+  })
 }
 
 export async function addMessage(
@@ -105,79 +148,89 @@ export async function addMessage(
   content: string,
   extra?: Partial<Message>
 ): Promise<Message | null> {
-  const session = readSession(sessionId)
-  if (!session) return null
+  return withSessionLock(sessionId, async () => {
+    const session = readSession(sessionId)
+    if (!session) return null
 
-  const message: Message = {
-    id: randomUUID(),
-    role,
-    content,
-    timestamp: new Date().toISOString(),
-    ...extra,
-  }
+    const message: Message = {
+      id: randomUUID(),
+      role,
+      content,
+      timestamp: new Date().toISOString(),
+      ...extra,
+    }
 
-  if (role === 'user' && session.messages.length === 0) {
-    session.title = content.slice(0, 60).trim() + (content.length > 60 ? '…' : '')
-  }
+    if (role === 'user' && session.messages.length === 0) {
+      session.title = content.slice(0, 60).trim() + (content.length > 60 ? '…' : '')
+    }
 
-  session.messages.push(message)
-  session.updated_at = new Date().toISOString()
-  await saveSession(session)
-  return message
+    session.messages.push(message)
+    session.updated_at = new Date().toISOString()
+    await saveSession(session)
+    return message
+  })
 }
 
 export async function deleteMessage(sessionId: string, index: number): Promise<boolean> {
-  const session = readSession(sessionId)
-  if (!session) return false
-  if (index < 0 || index >= session.messages.length) return false
-  session.messages.splice(index, 1)
-  session.updated_at = new Date().toISOString()
-  await saveSession(session)
-  return true
+  return withSessionLock(sessionId, async () => {
+    const session = readSession(sessionId)
+    if (!session) return false
+    if (index < 0 || index >= session.messages.length) return false
+    session.messages.splice(index, 1)
+    session.updated_at = new Date().toISOString()
+    await saveSession(session)
+    return true
+  })
 }
 
 export async function deleteLastAssistantMessage(sessionId: string): Promise<{
   deleted: boolean
   lastUserMessage: string | null
 }> {
-  const session = readSession(sessionId)
-  if (!session) return { deleted: false, lastUserMessage: null }
+  return withSessionLock(sessionId, async () => {
+    const session = readSession(sessionId)
+    if (!session) return { deleted: false, lastUserMessage: null }
 
-  let lastAiIdx = -1
-  for (let i = session.messages.length - 1; i >= 0; i--) {
-    if (session.messages[i].role === 'assistant') {
-      lastAiIdx = i
-      break
+    let lastAiIdx = -1
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      if (session.messages[i]?.role === 'assistant') {
+        lastAiIdx = i
+        break
+      }
     }
-  }
-  if (lastAiIdx === -1) return { deleted: false, lastUserMessage: null }
+    if (lastAiIdx === -1) return { deleted: false, lastUserMessage: null }
 
-  session.messages.splice(lastAiIdx, 1)
+    session.messages.splice(lastAiIdx, 1)
 
-  let lastUserContent: string | null = null
-  for (let i = lastAiIdx - 1; i >= 0; i--) {
-    if (session.messages[i].role === 'user') {
-      lastUserContent = session.messages[i].content
-      break
+    let lastUserContent: string | null = null
+    for (let i = lastAiIdx - 1; i >= 0; i--) {
+      const m = session.messages[i]
+      if (m?.role === 'user') {
+        lastUserContent = m.content
+        break
+      }
     }
-  }
 
-  session.updated_at = new Date().toISOString()
-  await saveSession(session)
-  return { deleted: true, lastUserMessage: lastUserContent }
+    session.updated_at = new Date().toISOString()
+    await saveSession(session)
+    return { deleted: true, lastUserMessage: lastUserContent }
+  })
 }
 
 export async function appendToLastAssistantMessage(sessionId: string, content: string): Promise<void> {
-  const session = readSession(sessionId)
-  if (!session) return
-  for (let i = session.messages.length - 1; i >= 0; i--) {
-    if (session.messages[i].role === 'assistant') {
-      session.messages[i].content += content
-      session.updated_at = new Date().toISOString()
-      await saveSession(session)
-      return
+  await withSessionLock(sessionId, async () => {
+    const session = readSession(sessionId)
+    if (!session) return
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const m = session.messages[i]
+      if (m?.role === 'assistant') {
+        m.content += content
+        session.updated_at = new Date().toISOString()
+        await saveSession(session)
+        return
+      }
     }
-  }
+  })
 }
 
 export function searchSessions(query: string): SessionSummary[] {
@@ -193,38 +246,42 @@ export function searchSessions(query: string): SessionSummary[] {
 }
 
 export async function truncateMessagesFrom(sessionId: string, fromIndex: number): Promise<boolean> {
-  const session = readSession(sessionId)
-  if (!session) return false
-  if (fromIndex < 0 || fromIndex > session.messages.length) return false
-  session.messages = session.messages.slice(0, fromIndex)
-  session.updated_at = new Date().toISOString()
-  await saveSession(session)
-  return true
+  return withSessionLock(sessionId, async () => {
+    const session = readSession(sessionId)
+    if (!session) return false
+    if (fromIndex < 0 || fromIndex > session.messages.length) return false
+    session.messages = session.messages.slice(0, fromIndex)
+    session.updated_at = new Date().toISOString()
+    await saveSession(session)
+    return true
+  })
 }
 
 export async function updateSessionMeta(
   sessionId: string,
   meta: { system_prompt?: string; temperature_preset?: TemperaturePreset | null }
 ): Promise<Session | null> {
-  const session = readSession(sessionId)
-  if (!session) return null
-  if ('system_prompt' in meta) {
-    if (meta.system_prompt == null || meta.system_prompt === '') {
-      delete session.system_prompt
-    } else {
-      session.system_prompt = meta.system_prompt
+  return withSessionLock(sessionId, async () => {
+    const session = readSession(sessionId)
+    if (!session) return null
+    if ('system_prompt' in meta) {
+      if (meta.system_prompt == null || meta.system_prompt === '') {
+        delete session.system_prompt
+      } else {
+        session.system_prompt = meta.system_prompt
+      }
     }
-  }
-  if ('temperature_preset' in meta) {
-    if (meta.temperature_preset == null) {
-      delete session.temperature_preset
-    } else {
-      session.temperature_preset = meta.temperature_preset
+    if ('temperature_preset' in meta) {
+      if (meta.temperature_preset == null) {
+        delete session.temperature_preset
+      } else {
+        session.temperature_preset = meta.temperature_preset
+      }
     }
-  }
-  session.updated_at = new Date().toISOString()
-  await saveSession(session)
-  return session
+    session.updated_at = new Date().toISOString()
+    await saveSession(session)
+    return session
+  })
 }
 
 export async function importSession(data: Partial<Session>): Promise<Session> {
