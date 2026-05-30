@@ -16,6 +16,7 @@ import xaiProxy from './routes/xaiProxy.js'
 import groqProxy from './routes/groqProxy.js'
 import dolphinProxy from './routes/dolphinProxy.js'
 import nineteenProxy from './routes/nineteenProxy.js'
+import nousProxy from './routes/nousProxy.js'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -43,6 +44,7 @@ app.route('/xai-proxy', xaiProxy)
 app.route('/groq-proxy', groqProxy)
 app.route('/dolphin-proxy', dolphinProxy)
 app.route('/nineteen-proxy', nineteenProxy)
+app.route('/nous-proxy', nousProxy)
 
 // ─── Attachment serving (no auth needed — single-user local app) ─────────
 app.route('/api', uploadRoutes)

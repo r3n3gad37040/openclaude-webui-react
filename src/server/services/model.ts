@@ -106,7 +106,7 @@ export async function discoverAndSaveModels(
   if (models.length > 0) {
     saveModels(models, provider)
   }
-  return models
+  return models.filter(m => m.type !== undefined) as Model[]
 }
 
 // ─── Switching ────────────────────────────────────────────────────────────

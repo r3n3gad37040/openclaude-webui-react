@@ -3,6 +3,7 @@ import { getAllProviders, getAllProviderKeys, getProviderApiKey, loadPreferences
 import { getModelInfo } from '../services/model.js'
 import { listSessions, getSession } from '../services/session.js'
 import { getActiveRunners, cancelRunner } from '../services/runner.js'
+import { safeJson, parseJson } from '../utils/json.js'
 import type { TemperaturePreset } from '../../types/index.js'
 
 const router = new Hono()
@@ -100,10 +101,7 @@ router.get('/preferences', (c) => {
 })
 
 router.post('/preferences', async (c) => {
-  const body = await c.req.json<{
-    default_system_prompt?: string
-    default_temperature_preset?: TemperaturePreset | null
-  }>().catch(() => ({}))
+  const body = await parseJson<{ default_system_prompt?: string; default_temperature_preset?: TemperaturePreset | null }>(c)
   const update: Record<string, unknown> = {}
   if ('default_system_prompt' in body) {
     update.default_system_prompt = body.default_system_prompt ?? ''
@@ -116,7 +114,7 @@ router.post('/preferences', async (c) => {
 })
 
 router.post('/auth', async (c) => {
-  const body = await c.req.json<{ token?: string }>().catch(() => ({}))
+  const body = await parseJson<{ token?: string }>(c)
   const { getAuthToken } = await import('../services/config.js')
   const stored = getAuthToken()
   if (stored && body.token === stored) {

@@ -14,6 +14,7 @@ export interface Model {
   alias: string       // "Kimi K2.5"
   provider: string    // "venice"
   type: ModelType
+  context_window?: number
 }
 
 export interface ToolCall {

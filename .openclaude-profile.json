@@ -1,0 +1,8 @@
+{
+  "profile": "openai",
+  "env": {
+    "OPENAI_BASE_URL": "https://api.venice.ai/api/v1",
+    "OPENAI_MODEL": "kimi-k2-6"
+  },
+  "createdAt": "2026-04-30T12:42:59.808Z"
+}

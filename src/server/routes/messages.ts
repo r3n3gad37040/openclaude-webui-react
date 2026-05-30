@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming'
 import { getSession, addMessage, deleteLastAssistantMessage } from '../services/session.js'
 import { startRunner, cancelRunner } from '../services/runner.js'
 import { getModelCost, getModelEntry, inferModelType, getProviderApiKey, PROXY_MAP } from '../services/config.js'
+import { parseJson } from '../utils/json.js'
 import type { ToolCall } from '../../types/index.js'
 
 const CLAUDE_MEM_URL = 'http://127.0.0.1:37777'
@@ -306,11 +307,7 @@ router.post('/:id/messages', async (c) => {
   const session = getSession(sessionId)
   if (!session) return c.json({ error: 'Session not found' }, 404)
 
-  const body = await c.req.json<{
-    message?: string
-    content?: string
-    attachments?: Array<{ name: string; path: string; size: number }>
-  }>().catch(() => ({}))
+  const body = await parseJson<{ message?: string; content?: string; attachments?: Array<{ name: string; path: string; size: number }> }>(c)
 
   const content = (body.message ?? body.content ?? '').trim()
   if (!content && !body.attachments?.length) return c.json({ error: 'Empty message' }, 400)
@@ -361,7 +358,7 @@ router.post('/:id/cancel', (c) => {
 })
 
 router.post('/regenerate', async (c) => {
-  const body = await c.req.json<{ session_id?: string }>().catch(() => ({}))
+  const body = await parseJson<{ session_id?: string }>(c)
   const sessionId = body.session_id ?? ''
   if (!sessionId) return c.json({ error: 'session_id is required' }, 400)
 

@@ -351,7 +351,6 @@ export function startRunner(
   const proc = spawn(cmd[0], cmd.slice(1), {
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
-    encoding: 'utf8',
   })
 
   // Drain stderr so the 64KB pipe buffer never blocks openclaude

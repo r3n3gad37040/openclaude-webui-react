@@ -25,6 +25,7 @@ export const PROXY_MAP: Record<string, string> = {
   groq: 'http://localhost:8789/groq-proxy',
   dolphin: 'http://localhost:8789/dolphin-proxy',
   nineteen: 'http://localhost:8789/nineteen-proxy',
+  nous: 'http://localhost:8789/nous-proxy',
 }
 
 export const PROVIDER_MAP: Record<string, { base_url: string; env_key: string }> = {
@@ -33,6 +34,7 @@ export const PROVIDER_MAP: Record<string, { base_url: string; env_key: string }>
   gemini: { base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', env_key: 'GEMINI_API_KEY' },
   mistral: { base_url: 'https://api.mistral.ai/v1', env_key: 'MISTRAL_API_KEY' },
   moonshot: { base_url: 'https://api.moonshot.ai/v1', env_key: 'MOONSHOT_API_KEY' },
+  nous: { base_url: 'https://api.nous.build/v1', env_key: 'NOUS_API_KEY' },
   venice: { base_url: 'https://api.venice.ai/api/v1', env_key: 'VENICE_API_KEY' },
   openrouter: { base_url: 'https://openrouter.ai/api/v1', env_key: 'OPENROUTER_API_KEY' },
   xai: { base_url: 'https://api.x.ai/v1', env_key: 'XAI_API_KEY' },
@@ -53,6 +55,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   gemini: 'Gemini',
   mistral: 'Mistral',
   moonshot: 'Moonshot',
+  nous: 'Nous Research',
   venice: 'Venice.ai',
   openrouter: 'OpenRouter',
   xai: 'xAI',
@@ -127,6 +130,12 @@ export function setProviderApiKey(provider: string, apiKey: string): void {
 
 export function getAllProviderKeys(): Record<string, string> {
   return readJson<Record<string, string>>(PROVIDER_KEYS_FILE, {})
+}
+
+export function deleteProviderApiKey(provider: string): void {
+  const keys = readJson<Record<string, string>>(PROVIDER_KEYS_FILE, {})
+  delete keys[provider]
+  writeJson(PROVIDER_KEYS_FILE, keys)
 }
 
 // ─── Providers ────────────────────────────────────────────────────────────

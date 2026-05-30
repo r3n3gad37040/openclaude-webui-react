@@ -6,9 +6,11 @@ import {
   getCurrentPrimaryModel,
   getAllProviderKeys,
   setProviderApiKey,
+  deleteProviderApiKey,
 } from '../services/config.js'
 import { getModelInfo, switchModel, discoverAndSaveModels } from '../services/model.js'
 import { updateSessionModelId } from '../services/session.js'
+import { parseJson } from '../utils/json.js'
 
 const router = new Hono()
 
@@ -35,9 +37,7 @@ router.get('/model', (c) => {
 })
 
 router.post('/switch-model', async (c) => {
-  const body = await c.req
-    .json<{ provider?: string; model?: string; api_key?: string; discover?: boolean; session_id?: string }>()
-    .catch(() => ({}))
+  const body = await parseJson<{ provider?: string; model?: string; api_key?: string; discover?: boolean; session_id?: string }>(c)
 
   const provider = (body.provider ?? '').trim().toLowerCase()
   const model = (body.model ?? '').trim()
@@ -59,9 +59,7 @@ router.post('/switch-model', async (c) => {
 })
 
 router.post('/discover-models', async (c) => {
-  const body = await c.req
-    .json<{ provider?: string; api_key?: string }>()
-    .catch(() => ({}))
+  const body = await parseJson<{ provider?: string; api_key?: string }>(c)
 
   const provider = (body.provider ?? '').trim().toLowerCase()
   const apiKey = body.api_key?.trim() || undefined
@@ -84,9 +82,7 @@ router.get('/provider_keys', (c) => {
 })
 
 router.post('/provider_keys', async (c) => {
-  const body = await c.req
-    .json<{ provider?: string; api_key?: string }>()
-    .catch(() => ({}))
+  const body = await parseJson<{ provider?: string; api_key?: string }>(c)
 
   const provider = (body.provider ?? '').trim().toLowerCase()
   const apiKey = (body.api_key ?? '').trim()
@@ -94,6 +90,12 @@ router.post('/provider_keys', async (c) => {
   if (!provider || !apiKey) return c.json({ error: 'Provider and api_key are required' }, 400)
 
   setProviderApiKey(provider, apiKey)
+  return c.json({ status: 'ok', provider })
+})
+
+router.delete('/provider_keys/:provider', async (c) => {
+  const provider = c.req.param('provider').trim().toLowerCase()
+  deleteProviderApiKey(provider)
   return c.json({ status: 'ok', provider })
 })
 
