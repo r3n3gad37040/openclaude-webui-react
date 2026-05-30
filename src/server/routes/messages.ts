@@ -83,7 +83,7 @@ function buildConversationPrompt(
   const parts: string[] = []
   let used = 0
   for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i]!
+    const m = history[i]
     const label = m.role === 'user' ? 'Human' : 'Assistant'
     const entry = `${label}: ${m.content}`
     const t = estimateTokens(entry)

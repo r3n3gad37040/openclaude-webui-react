@@ -23,7 +23,7 @@ interface AppState {
   createSession: () => Promise<string>
   deleteSession: (id: string) => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
-  selectSession: (id: string | null) => void
+  selectSession: (id: string) => void
   setStatus: (s: AppStatus | null) => void
   fetchStatus: () => Promise<void>
   startStatusPoll: () => void
@@ -79,8 +79,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   deleteSession: async (id: string) => {
     await api.deleteSession(id)
-    const sessions = get().sessions
-    get().selectSession(sessions.length > 0 ? sessions[0]!.id : null)
+    await get().fetchSessions()
+    if (get().activeSessionId === id) {
+      const sessions = get().sessions
+      get().selectSession(sessions.length > 0 ? sessions[0].id : null)
+    }
   },
 
   renameSession: async (id: string, title: string) => {
@@ -149,7 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const sessions = get().sessions
     set({
-      activeSessionId: sessions.length > 0 ? sessions[0]!.id : null,
+      activeSessionId: sessions.length > 0 ? sessions[0].id : null,
       loading: false,
       initialized: true,
     })

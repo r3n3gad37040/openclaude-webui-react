@@ -28,7 +28,7 @@ npm install
 bash launch.sh
 ```
 
-The browser opens automatically — no terminal stays open. Closing the tab kills the servers. First run will show empty key slots in Settings → API Keys. Add a key for any provider you want to use, click Save, then click the refresh icon next to the model picker to discover models.
+The browser opens automatically — no terminal stays open. Servers stay running until you run `bash stop.sh` or launch a new instance (which auto-kills the old one). First run will show empty key slots in Settings → API Keys. Add a key for any provider you want to use, click Save, then click the refresh icon next to the model picker to discover models.
 
 The optional `install.sh` additionally registers a GNOME `.desktop` launcher and copies the icon into the hicolor theme path so you can launch from your app menu (same silent behavior — no terminal). Both `launch.sh` and `install.sh` install into `$HOME/openclaude-webui` by default.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─── OpenClaude Web UI — Silent Launcher ────────────────────────────────
-# No terminal. Opens browser automatically. Closing tab → kills servers.
+# No terminal. Opens browser automatically. Servers run until stop.sh.
 # Kills all prior openclaude-webui servers before starting.
 set -euo pipefail
 
@@ -109,6 +109,8 @@ disown
 
 # ── Stage A: Wait for the browser to connect (long timeout) ──
 # Chrome with a fresh profile can take 5-15 seconds to initialize and connect.
+# Once the browser connects, we're done — servers stay up until explicitly
+# stopped (or until a new launch kills old instances in Phase 1).
 CONNECTED=0
 for i in $(seq 1 60); do
     sleep 1
@@ -122,53 +124,6 @@ for i in $(seq 1 60); do
     fi
 done
 
-# If browser never connected within 60s, just exit (servers die naturally)
-if [[ "$CONNECTED" -eq 0 ]]; then
-    # Browser didn't connect; clean shutdown
-    :
-else
-    # ── Stage B: Monitor for disconnect ──
-    # Browser is connected. When connections drop to 0 for 10s, user closed tab.
-    IDLE_COUNT=0
-    while true; do
-        sleep 2
-
-        # Check API still alive
-        API_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "http://localhost:${API_PORT}/api/healthz" 2>/dev/null || echo "000")
-        [[ "$API_CODE" != "200" ]] && break
-
-        CONNS=$(ss -tn state established "sport = :${UI_PORT}" 2>/dev/null | tail -n +2 | wc -l)
-
-        if [[ "$CONNS" -eq 0 ]]; then
-            IDLE_COUNT=$((IDLE_COUNT + 1))
-            [[ "$IDLE_COUNT" -ge 5 ]] && break   # 5 × 2s = 10s grace
-        else
-            IDLE_COUNT=0
-        fi
-    done
-fi
-
-# ═══════════════════════════════════════════════════════════════════════
-# PHASE 5 — SHUTDOWN
-# ═══════════════════════════════════════════════════════════════════════
-
-shutdown_proc() {
-    local pid_file="$1"
-    if [[ -f "$pid_file" ]]; then
-        local pid
-        pid=$(cat "$pid_file" 2>/dev/null || true)
-        [[ -n "$pid" ]] && kill_gentle "$pid"
-        rm -f "$pid_file"
-    fi
-}
-
-shutdown_proc "$UI_PID"
-shutdown_proc "$API_PID"
-sleep 0.5
-
-for port in $API_PORT $UI_PORT; do
-    (lsof -ti ":$port" 2>/dev/null || true) | while read -r pid; do
-        [[ -n "$pid" ]] && kill_hard "$pid"
-    done
-done
+# Servers are now running in the background (nohup'd).
+# They stay up until stop.sh is called or a new launch kills old instances.
+# This launcher exits here — no monitoring, no auto-kill.

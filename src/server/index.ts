@@ -50,11 +50,14 @@ app.route('/nous-proxy', nousProxy)
 app.route('/api', uploadRoutes)
 app.route('/api', mediaRoutes)
 
-// ─── Auth middleware on all /api routes except /api/auth ──────────────────
+// ─── Auth middleware on all /api routes except /api/auth and /api/healthz ─
 app.use('/api/*', async (c, next) => {
-  if (c.req.path === '/api/auth') return next()
+  if (c.req.path === '/api/auth' || c.req.path === '/api/healthz') return next()
   return authMiddleware()(c, next)
 })
+
+// ─── Liveness probe — never does I/O
+app.get('/api/healthz', (c) => c.json({ ok: true }))
 
 // ─── API routes ────────────────────────────────────────────────────────────
 app.route('/api/sessions', sessionRoutes)

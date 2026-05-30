@@ -169,7 +169,7 @@ const InputAreaWrapper: React.FC = () => {
                   break
                 case 'tool_done': {
                   const ti = toolCalls.findIndex(t => t.tool_id === evt['tool_id'])
-                  if (ti !== -1) toolCalls[ti]!.input = evt['input'] as string
+                  if (ti !== -1) toolCalls[ti].input = evt['input'] as string
                   break
                 }
                 case 'usage': {
